@@ -18,7 +18,11 @@ import java.util.concurrent.Executors
  *  - "data" handles scans and the bulk list strictly one after another (so scan order is kept);
  *  - "io" handles network work, so a slow PC never blocks scanning.
  */
-class NativeBridge(private val context: Context, private val webView: WebView) {
+class NativeBridge(
+    private val context: Context,
+    private val webView: WebView,
+    private val openCamera: () -> Unit = {}
+) {
     private val prefs = Prefs(context)
     private val products = ProductStore(context)
     private val scans = ScanListStore(context)
@@ -53,6 +57,7 @@ class NativeBridge(private val context: Context, private val webView: WebView) {
         "saveSettings" -> saveSettings(a)
         "setupScanner" -> { DataWedge.configure(context); JSONObject().put("ok", true) }
         "ping" -> ping()
+        "cameraScan" -> { ui.post { openCamera() }; JSONObject().put("ok", true) }
         "updateCheck" -> updateCheck()
         "updateInstall" -> updateInstall()
         "sync" -> runSync()

@@ -10,6 +10,8 @@ import android.view.WindowManager
 import android.webkit.WebSettings
 import android.webkit.WebView
 import androidx.appcompat.app.AppCompatActivity
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import androidx.core.content.ContextCompat
 import androidx.webkit.WebViewAssetLoader
 
@@ -17,6 +19,22 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var bridge: NativeBridge
     private var receiverRegistered = false
+
+    // Camera scanning: the library shows its own camera screen and returns the barcode text.
+    // The text goes through exactly the same path as a hardware scan (same rules, same lookup).
+    private val cameraLauncher = registerForActivityResult(ScanContract()) { result ->
+        result.contents?.let { bridge.emitScan(it) }
+    }
+
+    private fun startCamera() {
+        val options = ScanOptions()
+            .setDesiredBarcodeFormats(ScanOptions.ONE_D_CODE_TYPES) // retail barcodes, not QR
+            .setPrompt("Point the camera at the item's barcode")
+            .setBeepEnabled(true)
+            .setOrientationLocked(false)
+            .setBarcodeImageEnabled(false)
+        cameraLauncher.launch(options)
+    }
 
     private val scanReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -54,7 +72,7 @@ class MainActivity : AppCompatActivity() {
             ) = assets.shouldInterceptRequest(request.url)
         }
 
-        bridge = NativeBridge(this, webView)
+        bridge = NativeBridge(this, webView) { startCamera() }
         UpdateService(this, BuildConfig.UPDATE_REPO, BuildConfig.VERSION_CODE).cleanUp() // a finished update's download is no longer needed
         webView.addJavascriptInterface(bridge, "Android")
         webView.loadUrl("https://appassets.androidplatform.net/assets/index.html")

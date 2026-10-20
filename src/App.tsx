@@ -161,6 +161,7 @@ export default function App() {
             last={last}
             notice={notice}
             onManual={handleScan}
+            onCamera={() => call('cameraScan').catch((e) => setNotice({ kind: 'err', text: errText(e) }))}
             listCount={items.length}
             job={job}
             jobError={jobError}
@@ -249,6 +250,7 @@ function ScanTab(p: {
   last: ScanResult | null;
   notice: { kind: 'ok' | 'warn' | 'err'; text: string } | null;
   onManual: (code: string) => void;
+  onCamera: () => void;
   listCount: number;
   job: BatchInfo | null;
   jobError: string | null;
@@ -303,6 +305,13 @@ function ScanTab(p: {
           className="min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3 py-3 text-base"
         />
         <button className="rounded-xl bg-[#005A9C] px-4 font-bold text-white">Find</button>
+        <button
+          type="button"
+          onClick={() => p.onCamera()}
+          className="rounded-xl border border-[#005A9C] bg-white px-3 text-sm font-bold text-[#005A9C]"
+        >
+          Camera
+        </button>
       </form>
 
       {product ? (
