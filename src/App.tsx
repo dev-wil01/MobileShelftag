@@ -21,6 +21,7 @@ export default function App() {
   const [jobError, setJobError] = useState<string | null>(null);
   const [busyPrint, setBusyPrint] = useState(false);
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [tick, setTick] = useState(0); // counts scans, so each result card animates once
 
   // Input type: scanning/typing is a BARCODE by default; "SKU / Weighted" looks the typed or scanned value up as a SKU
   const [inputType, setInputType] = useState<InputType>('barcode');
@@ -57,6 +58,8 @@ export default function App() {
       const type = inputTypeRef.current;
       const r = await call<ScanResult>('scan', { barcode: code, add, type });
       setLast(r);
+      setTick((n) => n + 1);
+      call('haptic', { kind: r.status === 'ok' ? 'ok' : 'bad' }).catch(() => {});
       if (r.status === 'ok') {
         setNotice(null);
         if (add) {
@@ -129,29 +132,34 @@ export default function App() {
     setJobError(null);
   };
 
-  const tabs: [Tab, string][] = [
-    ['scan', 'Scan'],
-    ['list', `List${items.length ? ` (${items.length})` : ''}`],
-    ['sync', 'Sync'],
-    ['settings', 'Settings'],
+  const tabs: [Tab, string, IconName][] = [
+    ['scan', 'Scan', 'scan'],
+    ['list', 'List', 'list'],
+    ['sync', 'Sync', 'sync'],
+    ['settings', 'Settings', 'settings'],
   ];
 
   return (
-    <div className="flex h-full flex-col text-slate-900">
-      <header className="bg-[#005A9C] px-4 py-3 text-white">
-        <div className="text-lg font-bold">MobileShelfTag</div>
-        <div className="text-xs opacity-90">
-          {state ? `${state.productCount.toLocaleString()} barcodes · ${state.skuCount.toLocaleString()} SKUs · synced ${when(state.lastSyncMs)} · v${state.version}` : 'Starting…'}
+    <div className="flex h-full flex-col">
+      <header className="flex items-center justify-between bg-brand px-4 py-2.5 text-white">
+        <div className="flex items-center gap-2">
+          <Icon name="tag" className="h-5 w-5 text-tag" />
+          <span className="text-base font-bold tracking-tight">MobileShelfTag</span>
         </div>
+        <SyncPill state={state} />
       </header>
 
       {update?.available && tab !== 'settings' && (
-        <button onClick={() => setTab('settings')} className="bg-[#FFD100] px-4 py-2 text-left text-sm font-bold text-slate-900">
-          Update available: version {update.version}. Tap to install.
+        <button
+          onClick={() => setTab('settings')}
+          className="flex items-center justify-between bg-tag px-4 py-2.5 text-left text-sm font-bold text-ink"
+        >
+          <span>Version {update.version} is ready to install</span>
+          <span className="underline">Install</span>
         </button>
       )}
 
-      <main className="flex-1 overflow-y-auto p-4">
+      <main className="flex-1 overflow-y-auto px-4 pb-2 pt-3">
         {tab === 'scan' && (
           <ScanTab
             mode={mode}
@@ -159,6 +167,7 @@ export default function App() {
             inputType={inputType}
             setInputType={setInputType}
             last={last}
+            tick={tick}
             notice={notice}
             onManual={handleScan}
             onCamera={() => call('cameraScan').catch((e) => setNotice({ kind: 'err', text: errText(e) }))}
@@ -185,16 +194,32 @@ export default function App() {
         {tab === 'settings' && <SettingsTab state={state} onSaved={refresh} update={update} setUpdate={setUpdate} />}
       </main>
 
-      <nav className="grid grid-cols-4 border-t border-slate-300 bg-white">
-        {tabs.map(([key, label]) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={`py-3 text-sm font-semibold ${tab === key ? 'bg-[#FFD100] text-slate-900' : 'text-slate-600'}`}
-          >
-            {label}
-          </button>
-        ))}
+      <nav className="grid grid-cols-4 border-t border-slate-300 bg-white pb-1">
+        {tabs.map(([key, label, icon]) => {
+          const active = tab === key;
+          return (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              aria-current={active ? 'page' : undefined}
+              className={`relative flex flex-col items-center gap-0.5 pb-1.5 pt-2.5 text-xs font-semibold ${active ? 'text-brand' : 'text-slate-500'}`}
+            >
+              {active && <span className="absolute inset-x-6 top-0 h-[3px] rounded-b bg-tag" />}
+              <span className="relative">
+                <Icon name={icon} className="h-6 w-6" />
+                {key === 'list' && items.length > 0 && (
+                  <span className="absolute -right-3 -top-1.5 min-w-[18px] rounded-full bg-brand px-1 text-center text-[11px] font-bold leading-[18px] text-white">
+                    {items.length}
+                  </span>
+                )}
+                {key === 'settings' && update?.available && (
+                  <span className="absolute -right-1 -top-0.5 h-2.5 w-2.5 rounded-full bg-tag ring-2 ring-white" />
+                )}
+              </span>
+              {label}
+            </button>
+          );
+        })}
       </nav>
     </div>
   );
@@ -202,10 +227,63 @@ export default function App() {
 
 // ---------------------------------------------------------------- shared bits
 
+type IconName = 'scan' | 'list' | 'sync' | 'settings' | 'camera' | 'tag' | 'alert' | 'check' | 'trash';
+
+const ICONS: Record<IconName, string> = {
+  scan: 'M4 7V5a1 1 0 0 1 1-1h2M17 4h2a1 1 0 0 1 1 1v2M20 17v2a1 1 0 0 1-1 1h-2M7 20H5a1 1 0 0 1-1-1v-2M8 9v6M12 9v6M16 9v6',
+  list: 'M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01',
+  sync: 'M20 11a8 8 0 0 0-14.9-3M4 4v4h4M4 13a8 8 0 0 0 14.9 3M20 20v-4h-4',
+  settings: 'M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4',
+  camera: 'M4 8h3l1.5-2.5h7L17 8h3v11H4zM12 17a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z',
+  tag: 'M3 12V4h8l10 10-8 8zM7.5 8.5h.01',
+  alert: 'M12 8v5M12 16.5h.01M10.3 4.2 2.7 17.5A2 2 0 0 0 4.4 20.5h15.2a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0z',
+  check: 'M5 12.5l4.5 4.5L19 7.5',
+  trash: 'M5 7h14M10 7V5h4v2M7 7l1 13h8l1-13M10 11v5M14 11v5',
+};
+
+function Icon({ name, className = 'h-5 w-5' }: { name: IconName; className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+      <path d={ICONS[name]} />
+    </svg>
+  );
+}
+
+/** How fresh the offline price data is, at a glance: the thing that matters before trusting a price. */
+function SyncPill({ state }: { state: AppState | null }) {
+  if (!state) return <span className="text-xs opacity-80">Starting…</span>;
+  const days = state.lastSyncMs ? (Date.now() - state.lastSyncMs) / 86_400_000 : Infinity;
+  const [dot, text] =
+    state.lastSyncMs === 0
+      ? ['bg-red-400', 'Not synced']
+      : days < 1
+        ? ['bg-emerald-400', 'Synced today']
+        : days < 2
+          ? ['bg-emerald-400', 'Synced yesterday']
+          : days < 7
+            ? ['bg-amber-300', `Synced ${Math.floor(days)} days ago`]
+            : ['bg-red-400', `Synced ${Math.floor(days)} days ago`];
+  return (
+    <span className="flex items-center gap-1.5 rounded-full bg-white/15 px-2.5 py-1 text-xs font-semibold">
+      <span className={`h-2 w-2 rounded-full ${dot}`} />
+      {text}
+    </span>
+  );
+}
+
 function Banner({ kind, children }: { kind: 'ok' | 'warn' | 'err'; children: React.ReactNode }) {
-  const color =
-    kind === 'ok' ? 'bg-emerald-100 text-emerald-900' : kind === 'warn' ? 'bg-amber-100 text-amber-900' : 'bg-red-100 text-red-900';
-  return <div className={`mb-3 rounded-lg p-3 text-sm font-medium ${color}`}>{children}</div>;
+  const style =
+    kind === 'ok'
+      ? 'border-ok bg-emerald-50 text-emerald-950'
+      : kind === 'warn'
+        ? 'border-amber-500 bg-amber-50 text-amber-950'
+        : 'border-bad bg-red-50 text-red-950';
+  return (
+    <div role={kind === 'err' ? 'alert' : 'status'} className={`mb-3 flex gap-2.5 rounded-xl border-l-4 p-3 text-sm font-medium leading-snug ${style}`}>
+      <Icon name={kind === 'ok' ? 'check' : 'alert'} className="mt-0.5 h-5 w-5 shrink-0" />
+      <div className="min-w-0">{children}</div>
+    </div>
+  );
 }
 
 function JobStatus({ job, jobError }: { job: BatchInfo | null; jobError: string | null }) {
@@ -238,7 +316,37 @@ function JobStatus({ job, jobError }: { job: BatchInfo | null; jobError: string 
   );
 }
 
-const btn = 'w-full rounded-xl py-4 text-base font-bold disabled:opacity-50';
+const btn = 'w-full rounded-2xl py-4 text-base font-bold tracking-tight transition active:scale-[0.99] disabled:opacity-50';
+const card = 'rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5';
+
+function Segmented<T extends string>(p: { value: T; onChange: (v: T) => void; options: [T, string][] }) {
+  return (
+    <div className="grid grid-flow-col auto-cols-fr gap-1 rounded-2xl bg-slate-200/80 p-1">
+      {p.options.map(([v, label]) => (
+        <button
+          key={v}
+          onClick={() => p.onChange(v)}
+          aria-pressed={p.value === v}
+          className={`rounded-xl py-2.5 text-sm font-bold transition ${p.value === v ? 'bg-white text-brand shadow' : 'text-slate-600'}`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** The price as it reads on a shelf tag: peso sign small, amount large. */
+function Price({ value, className = '' }: { value: string; className?: string }) {
+  const n = Number(value);
+  const text = Number.isFinite(n) ? n.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : value;
+  return (
+    <span className={`font-black tabular-nums tracking-tight ${className}`}>
+      <span className="mr-1 align-[0.55em] text-[0.45em] font-extrabold">₱</span>
+      {text}
+    </span>
+  );
+}
 
 // ---------------------------------------------------------------- Scan
 
@@ -248,6 +356,7 @@ function ScanTab(p: {
   inputType: InputType;
   setInputType: (t: InputType) => void;
   last: ScanResult | null;
+  tick: number;
   notice: { kind: 'ok' | 'warn' | 'err'; text: string } | null;
   onManual: (code: string) => void;
   onCamera: () => void;
@@ -259,38 +368,29 @@ function ScanTab(p: {
 }) {
   const [text, setText] = useState('');
   const product = p.last?.status === 'ok' ? p.last.product : undefined;
+  const sku = p.inputType === 'sku';
 
   return (
-    <div>
-      <div className="mb-3 grid grid-cols-2 overflow-hidden rounded-xl border border-slate-300 bg-white">
-        {(['single', 'bulk'] as Mode[]).map((m) => (
-          <button
-            key={m}
-            onClick={() => p.setMode(m)}
-            className={`py-3 text-sm font-bold ${p.mode === m ? 'bg-[#005A9C] text-white' : 'text-slate-600'}`}
-          >
-            {m === 'single' ? 'Single label' : 'Bulk list'}
-          </button>
-        ))}
-      </div>
-
-      <div className="mb-3 grid grid-cols-2 overflow-hidden rounded-xl border border-slate-300 bg-white">
-        {(['barcode', 'sku'] as InputType[]).map((k) => (
-          <button
-            key={k}
-            onClick={() => p.setInputType(k)}
-            className={`py-2 text-sm font-bold ${p.inputType === k ? 'bg-[#FFD100] text-slate-900' : 'text-slate-600'}`}
-          >
-            {k === 'barcode' ? 'Input: Barcode' : 'Input: SKU / Weighted'}
-          </button>
-        ))}
-      </div>
-
-      {p.notice && <Banner kind={p.notice.kind}>{p.notice.text}</Banner>}
-      <JobStatus job={p.job} jobError={p.jobError} />
+    <div className="space-y-2.5">
+      <Segmented
+        value={p.mode}
+        onChange={p.setMode}
+        options={[
+          ['single', 'Single label'],
+          ['bulk', 'Bulk list'],
+        ]}
+      />
+      <Segmented
+        value={p.inputType}
+        onChange={p.setInputType}
+        options={[
+          ['barcode', 'Barcode'],
+          ['sku', 'SKU / weighted'],
+        ]}
+      />
 
       <form
-        className="mb-4 flex gap-2"
+        className="flex gap-2 pt-1"
         onSubmit={(e) => {
           e.preventDefault();
           if (text.trim()) p.onManual(text.trim());
@@ -300,45 +400,70 @@ function ScanTab(p: {
         <input
           value={text}
           onChange={(e) => setText(e.target.value)}
-          inputMode={p.inputType === 'sku' ? 'text' : 'numeric'}
-          placeholder={p.inputType === 'sku' ? 'Type the SKU (weighted items)' : 'Scan, or type a barcode'}
-          className="min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3 py-3 text-base"
+          inputMode={sku ? 'text' : 'numeric'}
+          maxLength={20}
+          autoComplete="off"
+          placeholder={sku ? 'Type the SKU' : 'Scan or type a barcode'}
+          className="min-w-0 flex-1 rounded-2xl border border-slate-300 bg-white px-4 py-3.5 text-lg tabular-nums"
         />
-        <button className="rounded-xl bg-[#005A9C] px-4 font-bold text-white">Find</button>
+        <button className="rounded-2xl bg-brand px-5 text-base font-bold text-white">Find</button>
         <button
           type="button"
           onClick={() => p.onCamera()}
-          className="rounded-xl border border-[#005A9C] bg-white px-3 text-sm font-bold text-[#005A9C]"
+          aria-label="Scan with the camera"
+          className="grid w-14 place-items-center rounded-2xl border-2 border-brand bg-white text-brand"
         >
-          Camera
+          <Icon name="camera" className="h-6 w-6" />
         </button>
       </form>
 
+      <div className="pt-1">
+        {p.notice && <Banner kind={p.notice.kind}>{p.notice.text}</Banner>}
+        <JobStatus job={p.job} jobError={p.jobError} />
+      </div>
+
       {product ? (
-        <div className="rounded-2xl bg-white p-4 shadow">
-          <div className="text-sm text-slate-500">
-            {product.kind === 'sku' ? `SKU ${product.sku} · found by SKU` : `${product.barcode} · SKU ${product.sku}`}
-          </div>
-          <div className="mt-1 text-lg font-bold leading-tight">{product.longDesc || product.shortDesc}</div>
-          <div className="mt-2 text-4xl font-extrabold text-[#005A9C]">{peso(product.price)}</div>
-          {p.mode === 'single' ? (
-            <button
-              disabled={p.busy}
-              onClick={() => p.onPrintOne(product)}
-              className={`${btn} mt-4 bg-[#FFD100] text-slate-900`}
-            >
-              {p.busy ? 'Printing…' : 'PRINT 1 LABEL'}
-            </button>
-          ) : (
-            <div className="mt-3 rounded-lg bg-emerald-50 p-2 text-center text-sm font-semibold text-emerald-800">
-              Added to the list · {p.listCount} item(s)
+        // The result is drawn like the shelf tag it will print: description on top, the price, a yellow base.
+        <div key={p.tick} className="settle overflow-hidden rounded-2xl bg-white shadow-md ring-1 ring-black/10">
+          <div className="px-4 pt-4">
+            <div className="text-lg font-bold leading-snug">{product.longDesc || product.shortDesc}</div>
+            <div className="mt-1 text-sm tabular-nums text-slate-500">
+              {product.kind === 'sku' ? (
+                <>SKU {product.sku}{product.barcode === '0' ? ' · weighted item' : ` · barcode ${product.barcode}`}</>
+              ) : (
+                <>{product.barcode} · SKU {product.sku}</>
+              )}
             </div>
-          )}
+          </div>
+          <div className="px-4 pb-4 pt-2">
+            <Price value={product.price} className="text-[64px] leading-none text-brand" />
+          </div>
+          <div className="h-2 bg-tag" />
+          <div className="p-3">
+            {p.mode === 'single' ? (
+              <button disabled={p.busy} onClick={() => p.onPrintOne(product)} className={`${btn} bg-tag text-ink`}>
+                {p.busy ? 'Printing…' : 'Print 1 label'}
+              </button>
+            ) : (
+              <div className="flex items-center justify-center gap-2 rounded-xl bg-emerald-50 py-3 text-sm font-bold text-ok">
+                <Icon name="check" className="h-5 w-5" />
+                Added to the list ({p.listCount})
+              </div>
+            )}
+          </div>
         </div>
       ) : (
-        <div className="mt-10 text-center text-slate-400">
-          {p.inputType === 'sku' ? 'Type a SKU (for weighted items)' : 'Scan a product barcode'}
-        </div>
+        !p.notice && (
+          <div className="flex flex-col items-center px-6 pt-10 text-center text-slate-500">
+            <div className="grid h-24 w-24 place-items-center rounded-full bg-white text-brand shadow-sm ring-1 ring-black/5">
+              <Icon name="scan" className="h-12 w-12" />
+            </div>
+            <div className="mt-4 text-lg font-bold text-ink">Ready to scan</div>
+            <div className="mt-1 text-sm leading-snug">
+              {sku ? 'Type a SKU to find weighted items.' : 'Pull the trigger on a barcode, or tap the camera.'}
+            </div>
+          </div>
+        )
       )}
     </div>
   );
@@ -370,47 +495,58 @@ function ListTab(p: {
       )}
 
       {p.items.length === 0 ? (
-        <div className="mt-10 text-center text-slate-400">The list is empty. Switch to Bulk list and scan products.</div>
+        <div className="flex flex-col items-center px-6 pt-12 text-center text-slate-500">
+          <div className="grid h-20 w-20 place-items-center rounded-full bg-white text-slate-400 shadow-sm ring-1 ring-black/5">
+            <Icon name="list" className="h-10 w-10" />
+          </div>
+          <div className="mt-4 text-lg font-bold text-ink">No labels in the list</div>
+          <div className="mt-1 text-sm leading-snug">On the Scan tab, choose Bulk list and scan the products to print together.</div>
+        </div>
       ) : (
         <>
-          <div className="mb-2 text-xs text-slate-500">Labels print in this order (first scanned first).</div>
-          <ol className="mb-4 space-y-2">
+          <div className="mb-2 flex items-baseline justify-between">
+            <div className="text-base font-bold">{p.items.length} {p.items.length === 1 ? 'label' : 'labels'}</div>
+            <div className="text-xs text-slate-500">Prints top to bottom, first scanned first</div>
+          </div>
+          <ol className="space-y-2">
             {p.items.map((it, i) => (
-              <li key={it.id} className="flex items-center gap-3 rounded-xl bg-white p-3 shadow-sm">
-                <div className="w-7 text-center text-sm font-bold text-slate-400">{i + 1}</div>
+              <li key={it.id} className="flex items-center gap-3 rounded-xl bg-white py-2.5 pl-3 pr-1.5 shadow-sm ring-1 ring-black/5">
+                <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-aisle text-sm font-bold tabular-nums text-slate-600">{i + 1}</div>
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-semibold">{it.longDesc || it.shortDesc}</div>
-                  <div className="text-xs text-slate-500">{it.kind === 'sku' ? `SKU ${it.sku}` : it.barcode}</div>
+                  <div className="text-xs tabular-nums text-slate-500">{it.kind === 'sku' ? `SKU ${it.sku}` : it.barcode}</div>
                 </div>
-                <div className="text-sm font-bold text-[#005A9C]">{peso(it.price)}</div>
+                <Price value={it.price} className="text-lg text-brand" />
                 <button
-                  aria-label="Remove"
+                  aria-label={`Remove item ${i + 1}`}
                   onClick={() => p.onRemove(it.id!)}
                   disabled={p.busy}
-                  className="rounded-lg px-2 py-1 text-lg text-red-600 disabled:opacity-40"
+                  className="grid h-11 w-11 place-items-center rounded-lg text-slate-400 active:bg-red-50 active:text-bad disabled:opacity-40"
                 >
-                  ✕
+                  <Icon name="trash" className="h-5 w-5" />
                 </button>
               </li>
             ))}
           </ol>
-          <button disabled={p.busy} onClick={p.onSend} className={`${btn} mb-2 bg-[#FFD100] text-slate-900`}>
-            {p.busy ? 'Sending…' : `PRINT ALL (${p.items.length})`}
-          </button>
-          <button
-            disabled={p.busy}
-            onClick={() => {
-              if (confirmClear) {
-                setConfirmClear(false);
-                p.onClear();
-              } else {
-                setConfirmClear(true);
-              }
-            }}
-            className={`${btn} bg-white text-red-700 border border-red-300`}
-          >
-            {confirmClear ? 'Tap again to remove ALL items' : 'Clear list'}
-          </button>
+          <div className="sticky bottom-0 -mx-4 mt-4 space-y-2 bg-aisle/95 px-4 pb-1 pt-3 backdrop-blur">
+            <button disabled={p.busy} onClick={p.onSend} className={`${btn} bg-tag text-ink`}>
+              {p.busy ? 'Sending…' : `Print all ${p.items.length}`}
+            </button>
+            <button
+              disabled={p.busy}
+              onClick={() => {
+                if (confirmClear) {
+                  setConfirmClear(false);
+                  p.onClear();
+                } else {
+                  setConfirmClear(true);
+                }
+              }}
+              className={`w-full rounded-2xl border py-3 text-sm font-bold ${confirmClear ? 'border-bad bg-bad text-white' : 'border-slate-300 bg-white text-slate-600'}`}
+            >
+              {confirmClear ? 'Tap again to remove all items' : 'Clear list'}
+            </button>
+          </div>
         </>
       )}
     </div>
@@ -446,7 +582,7 @@ function SyncTab({ state, onDone }: { state: AppState | null; onDone: () => void
 
   return (
     <div>
-      <div className="mb-4 rounded-2xl bg-white p-4 shadow">
+      <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
         <div className="text-sm text-slate-500">On this device</div>
         <div className="text-2xl font-extrabold">{(state?.productCount ?? 0).toLocaleString()} products</div>
         <div className="mt-1 text-sm text-slate-600">Last sync: {when(state?.lastSyncMs ?? 0)}</div>
@@ -463,12 +599,12 @@ function SyncTab({ state, onDone }: { state: AppState | null; onDone: () => void
             {progress?.phase ?? 'Starting'} {pct !== null ? `${pct}%` : ''}
           </div>
           <div className="h-3 overflow-hidden rounded-full bg-slate-200">
-            <div className="h-full bg-[#005A9C] transition-all" style={{ width: `${pct ?? 5}%` }} />
+            <div className="h-full bg-brand transition-all" style={{ width: `${pct ?? 5}%` }} />
           </div>
         </div>
       )}
 
-      <button disabled={running} onClick={run} className={`${btn} bg-[#005A9C] text-white`}>
+      <button disabled={running} onClick={run} className={`${btn} bg-brand text-white`}>
         {running ? 'Syncing…' : 'SYNC MASTERFILE NOW'}
       </button>
       <p className="mt-3 text-xs text-slate-500">
@@ -578,7 +714,7 @@ function SettingsTab({
     }
   };
 
-  const field = 'mb-3 w-full rounded-xl border border-slate-300 bg-white px-3 py-3 text-base';
+  const field = 'mb-3 w-full rounded-2xl border border-slate-300 bg-white px-4 py-3.5 text-base';
 
   return (
     <div>
@@ -599,7 +735,7 @@ function SettingsTab({
         placeholder={state?.hasToken ? '(saved — leave blank to keep)' : 'from mobile-api.json on the PC'}
       />
 
-      <button onClick={test} className={`${btn} mb-2 bg-[#005A9C] text-white`}>
+      <button onClick={test} className={`${btn} mb-2 bg-brand text-white`}>
         SAVE &amp; TEST CONNECTION
       </button>
       <button onClick={save} className={`${btn} mb-6 bg-white text-slate-700 border border-slate-300`}>
@@ -610,7 +746,7 @@ function SettingsTab({
         Set up scanner (DataWedge)
       </button>
 
-      <div className="rounded-2xl bg-white p-4 shadow-sm">
+      <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
         <div className="text-sm font-semibold">App updates</div>
         <div className="mb-3 text-xs text-slate-500">Installed version {state?.version ?? '…'}</div>
         {!state?.updateEnabled ? (
@@ -627,7 +763,7 @@ function SettingsTab({
                     Downloading {Math.round((upProgress.done / upProgress.total) * 100)}%
                   </div>
                 )}
-                <button disabled={upBusy} onClick={installUpdate} className={`${btn} mt-3 bg-[#FFD100] text-slate-900 disabled:opacity-50`}>
+                <button disabled={upBusy} onClick={installUpdate} className={`${btn} mt-3 bg-tag text-slate-900 disabled:opacity-50`}>
                   {upBusy ? 'Please wait…' : 'DOWNLOAD & INSTALL UPDATE'}
                 </button>
               </div>

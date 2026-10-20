@@ -31,7 +31,7 @@ class MainActivity : AppCompatActivity() {
             .setDesiredBarcodeFormats(ScanOptions.ONE_D_CODE_TYPES) // retail barcodes, not QR
             .setPrompt("Point the camera at the item's barcode")
             .setBeepEnabled(true)
-            .setOrientationLocked(false)
+            .setOrientationLocked(true) // stays portrait, also when the handheld is turned over
             .setBarcodeImageEnabled(false)
         cameraLauncher.launch(options)
     }
@@ -66,7 +66,15 @@ class MainActivity : AppCompatActivity() {
             setSupportZoom(false)
         }
 
+        WebView.setWebContentsDebuggingEnabled(false)
+        webView.settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+        webView.settings.setGeolocationEnabled(false)
+
         webView.webViewClient = object : android.webkit.WebViewClient() {
+            // The screens never navigate anywhere else; any other address is refused.
+            override fun shouldOverrideUrlLoading(view: WebView, request: android.webkit.WebResourceRequest): Boolean =
+                request.url.host != "appassets.androidplatform.net"
+
             override fun shouldInterceptRequest(
                 view: WebView, request: android.webkit.WebResourceRequest
             ) = assets.shouldInterceptRequest(request.url)

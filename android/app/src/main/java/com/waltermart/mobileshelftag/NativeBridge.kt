@@ -1,8 +1,12 @@
 package com.waltermart.mobileshelftag
 
 import android.content.Context
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import org.json.JSONArray
@@ -57,6 +61,7 @@ class NativeBridge(
         "saveSettings" -> saveSettings(a)
         "setupScanner" -> { DataWedge.configure(context); JSONObject().put("ok", true) }
         "ping" -> ping()
+        "haptic" -> { haptic(a.optString("kind")); JSONObject().put("ok", true) }
         "cameraScan" -> { ui.post { openCamera() }; JSONObject().put("ok", true) }
         "updateCheck" -> updateCheck()
         "updateInstall" -> updateInstall()
@@ -71,6 +76,20 @@ class NativeBridge(
         /** Removes the oldest [completed] labels: the ones already sent. */
         "resendRemaining" -> { scans.removeOldest(a.getInt("completed")); resetPending(); listGet() }
         else -> throw IllegalArgumentException("Unknown method $method")
+    }
+
+    /** A short buzz for a good scan, two for a bad one. Best effort: a device without a vibrator is simply silent. */
+    @Suppress("DEPRECATION")
+    private fun haptic(kind: String) {
+        try {
+            val v: Vibrator = if (Build.VERSION.SDK_INT >= 31)
+                context.getSystemService(VibratorManager::class.java).defaultVibrator
+            else context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            val pattern = if (kind == "ok") longArrayOf(0, 35) else longArrayOf(0, 80, 60, 80)
+            if (Build.VERSION.SDK_INT >= 26) v.vibrate(VibrationEffect.createWaveform(pattern, -1)) else v.vibrate(pattern, -1)
+        } catch (e: Exception) {
+            // feedback is optional
+        }
     }
 
     // ---- state / settings ------------------------------------------------------------

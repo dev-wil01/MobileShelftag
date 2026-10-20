@@ -1,4 +1,34 @@
 @import "tailwindcss";
 
+/* Palette: the store's blue and yellow, on a quiet aisle-grey ground. Price numbers are the loudest thing on screen. */
+@theme {
+  --color-ink: #14212e;
+  --color-brand: #005a9c;
+  --color-brand-deep: #004578;
+  --color-tag: #ffd100;
+  --color-aisle: #eef1f4;
+  --color-ok: #17794a;
+  --color-bad: #b3261e;
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
 html, body, #root { height: 100%; }
-body { margin: 0; background: #f3f5f8; -webkit-tap-highlight-color: transparent; overscroll-behavior: none; }
+body {
+  margin: 0;
+  background: var(--color-aisle);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+input { -webkit-user-select: text; user-select: text; }
+
+/* A result card settles in when a scan lands (answers the user's action; no other idle motion) */
+@keyframes settle { from { transform: translateY(6px) scale(0.985); opacity: 0.4; } to { transform: none; opacity: 1; } }
+.settle { animation: settle 160ms ease-out; }
+
+@media (prefers-reduced-motion: reduce) { .settle { animation: none; } }
+
+button:focus-visible, input:focus-visible { outline: 3px solid var(--color-brand); outline-offset: 2px; }

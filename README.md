@@ -1,4 +1,3 @@
-Test update
 # MobileShelfTag
 
 An Android app (Zebra DataWedge scanners) for looking up products offline and sending shelf-tag print requests to a companion desktop application on the local network.

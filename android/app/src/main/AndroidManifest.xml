@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- camera barcode scanning (optional: the hardware scanner keeps working without it) -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- short vibration feedback on scan results -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <!-- lets the app hand a downloaded update to the Android installer (the user still confirms) -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
@@ -31,10 +33,10 @@
             </intent-filter>
         </activity>
 
-        <!-- The scanner screen of the camera library, allowed to follow the handheld's portrait orientation -->
+        <!-- The camera library's scanner screen is locked to portrait like the rest of the app (the library default rotates with the sensor) -->
         <activity
             android:name="com.journeyapps.barcodescanner.CaptureActivity"
-            android:screenOrientation="fullSensor"
+            android:screenOrientation="portrait"
             tools:replace="android:screenOrientation" />
 
         <provider
