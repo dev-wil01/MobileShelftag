@@ -24,4 +24,16 @@ object BarcodeRules {
         if (masterfileBarcode == null) return true
         return masterfileBarcode.trim().trimStart('0').isEmpty()
     }
+
+    /**
+     * SKU lookup key (weighted items and "SKU" input). Letters and digits only, 1-20 characters,
+     * kept exactly as typed: no zero stripping (02382 is not 2382). Same rule as the PC side.
+     */
+    fun normalizeSku(input: String?): String? {
+        if (input.isNullOrBlank()) return null
+        val text = input.trim()
+        if (text.length > 20) return null
+        if (!text.all { it in '0'..'9' || it in 'A'..'Z' || it in 'a'..'z' }) return null
+        return text
+    }
 }

@@ -118,12 +118,21 @@ class NativeBridge(private val context: Context, private val webView: WebView) {
 
     // ---- scanning / bulk list --------------------------------------------------------
 
-    /** Looks a barcode up in the offline database. With add=true a found product is appended to the bulk list. */
+    /**
+     * Looks a barcode (type "barcode", the default) or a SKU (type "sku", also for weighted items)
+     * up in the offline database. With add=true a found product is appended to the bulk list.
+     */
     private fun scan(a: JSONObject): JSONObject {
-        val key = BarcodeRules.normalize(a.optString("barcode"))
-            ?: return JSONObject().put("status", "invalid")
+        val isSku = a.optString("type") == "sku"
+        val typed = a.optString("barcode")
+
+        val key = (if (isSku) BarcodeRules.normalizeSku(typed) else BarcodeRules.normalize(typed))
+            ?: return JSONObject().put("status", "invalid").put("type", if (isSku) "sku" else "barcode")
         if (products.count() == 0) return JSONObject().put("status", "nodata")
-        val p = products.find(key) ?: return JSONObject().put("status", "notfound").put("barcode", key)
+        if (isSku && !products.hasSkus()) return JSONObject().put("status", "nosku")
+
+        val p = (if (isSku) products.findSku(key) else products.find(key))
+            ?: return JSONObject().put("status", "notfound").put("barcode", key).put("type", if (isSku) "sku" else "barcode")
 
         val out = JSONObject().put("status", "ok").put("product", productJson(p))
         if (a.optBoolean("add")) {
@@ -134,9 +143,17 @@ class NativeBridge(private val context: Context, private val webView: WebView) {
         return out
     }
 
+    /** What identifies a list item to the PC: the barcode, or "sku:<sku>" for items found by SKU. */
+    private fun keyOf(p: Product) = if (p.kind == "sku") "sku:" + p.sku else p.barcode
+
+    /** One print line for the request: {"seq":n,"barcode":..} or {"seq":n,"sku":..}. */
+    private fun lineJson(seq: Int, key: String): JSONObject =
+        if (key.startsWith("sku:")) JSONObject().put("seq", seq).put("sku", key.removePrefix("sku:"))
+        else JSONObject().put("seq", seq).put("barcode", key)
+
     private fun productJson(p: Product) = JSONObject()
         .put("barcode", p.barcode).put("sku", p.sku).put("shortDesc", p.shortDesc)
-        .put("price", p.price).put("longDesc", p.longDesc)
+        .put("price", p.price).put("longDesc", p.longDesc).put("kind", p.kind)
 
     private fun listGet(): JSONObject {
         val arr = JSONArray()
@@ -153,7 +170,7 @@ class NativeBridge(private val context: Context, private val webView: WebView) {
         val items = scans.all()
         if (items.isEmpty()) throw ApiException("The list is empty.")
 
-        val fingerprint = BatchPlan.fingerprint(items.map { it.id to it.product.barcode })
+        val fingerprint = BatchPlan.fingerprint(items.map { it.id to keyOf(it.product) })
         if (prefs.pendingBatchId.isBlank() || prefs.pendingFingerprint != fingerprint) {
             prefs.pendingBatchId = newBatchId()
             prefs.pendingFingerprint = fingerprint
@@ -162,8 +179,8 @@ class NativeBridge(private val context: Context, private val webView: WebView) {
 
         val body = JSONObject().put("batchId", batchId)
         val arr = JSONArray()
-        BatchPlan.lines(items.map { it.product.barcode }).forEach {
-            arr.put(JSONObject().put("seq", it.seq).put("barcode", it.barcode))
+        BatchPlan.lines(items.map { keyOf(it.product) }).forEach {
+            arr.put(lineJson(it.seq, it.barcode))
         }
         body.put("items", arr)
 
@@ -174,7 +191,7 @@ class NativeBridge(private val context: Context, private val webView: WebView) {
         requireConnection()
         val batchId = newBatchId()
         val body = JSONObject().put("batchId", batchId).put(
-            "items", JSONArray().put(JSONObject().put("seq", 1).put("barcode", a.getString("barcode")))
+            "items", JSONArray().put(lineJson(1, if (a.optString("type") == "sku") "sku:" + a.getString("barcode") else a.getString("barcode")))
         )
         return submit(batchId, body)
     }
@@ -183,7 +200,7 @@ class NativeBridge(private val context: Context, private val webView: WebView) {
         val r = api.postJson("/api/v1/print-batches", body.toString())
         return when (r.code) {
             200, 202 -> JSONObject(r.body).put("batchId", batchId)
-            422 -> throw ApiException("The PC does not know these barcodes: " + barcodesOf(r.body) + ". Sync the masterfile and try again.")
+            422 -> throw ApiException("The PC does not know these items: " + barcodesOf(r.body) + ". Sync the masterfile and try again.")
             400 -> throw ApiException("The PC refused the request: " + r.body)
             409 -> throw ApiException("This batch was already sent with different items. Clear the list and start again.")
             else -> throw ApiException(ApiClient.describe(r.code, r.body))

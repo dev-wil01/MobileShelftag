@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { call, onEvent } from './native';
-import type { AppState, BatchInfo, Product, ScanResult } from './types';
+import type { AppState, BatchInfo, InputType, Product, ScanResult } from './types';
 
 type Tab = 'scan' | 'list' | 'sync' | 'settings';
 type Mode = 'single' | 'bulk';
@@ -20,6 +20,11 @@ export default function App() {
   const [job, setJob] = useState<BatchInfo | null>(null);
   const [jobError, setJobError] = useState<string | null>(null);
   const [busyPrint, setBusyPrint] = useState(false);
+
+  // Input type: scanning/typing is a BARCODE by default; "SKU / Weighted" looks the typed or scanned value up as a SKU
+  const [inputType, setInputType] = useState<InputType>('barcode');
+  const inputTypeRef = useRef(inputType);
+  inputTypeRef.current = inputType;
 
   const modeRef = useRef(mode);
   modeRef.current = mode;
@@ -42,7 +47,8 @@ export default function App() {
   const handleScan = useCallback(async (code: string) => {
     try {
       const add = modeRef.current === 'bulk';
-      const r = await call<ScanResult>('scan', { barcode: code, add });
+      const type = inputTypeRef.current;
+      const r = await call<ScanResult>('scan', { barcode: code, add, type });
       setLast(r);
       if (r.status === 'ok') {
         setNotice(null);
@@ -51,11 +57,19 @@ export default function App() {
           setItems(l.items);
         }
       } else if (r.status === 'invalid') {
-        setNotice({ kind: 'warn', text: `"${code}" is not a valid barcode (weighted/zero barcodes cannot be printed).` });
+        setNotice({
+          kind: 'warn',
+          text:
+            type === 'sku'
+              ? `"${code}" is not a valid SKU (letters and digits only, up to 20).`
+              : `"${code}" is not a valid barcode. Weighted items have barcode 0: switch Input to "SKU / Weighted" and type their SKU.`,
+        });
       } else if (r.status === 'nodata') {
         setNotice({ kind: 'err', text: 'No product data on this device yet. Open the Sync tab and sync the masterfile.' });
+      } else if (r.status === 'nosku') {
+        setNotice({ kind: 'err', text: 'This device has no SKU data yet. Open the Sync tab and sync the masterfile again.' });
       } else {
-        setNotice({ kind: 'warn', text: `Product not found: ${r.barcode ?? code}` });
+        setNotice({ kind: 'warn', text: `${type === 'sku' ? 'SKU' : 'Product'} not found: ${r.barcode ?? code}` });
       }
     } catch (e) {
       setNotice({ kind: 'err', text: errText(e) });
@@ -129,6 +143,8 @@ export default function App() {
           <ScanTab
             mode={mode}
             setMode={setMode}
+            inputType={inputType}
+            setInputType={setInputType}
             last={last}
             notice={notice}
             onManual={handleScan}
@@ -136,7 +152,7 @@ export default function App() {
             job={job}
             jobError={jobError}
             busy={busyPrint}
-            onPrintOne={(p) => send('printSingle', { barcode: p.barcode })}
+            onPrintOne={(p) => send('printSingle', p.kind === 'sku' ? { barcode: p.sku, type: 'sku' } : { barcode: p.barcode })}
           />
         )}
         {tab === 'list' && (
@@ -215,6 +231,8 @@ const btn = 'w-full rounded-xl py-4 text-base font-bold disabled:opacity-50';
 function ScanTab(p: {
   mode: Mode;
   setMode: (m: Mode) => void;
+  inputType: InputType;
+  setInputType: (t: InputType) => void;
   last: ScanResult | null;
   notice: { kind: 'ok' | 'warn' | 'err'; text: string } | null;
   onManual: (code: string) => void;
@@ -241,6 +259,18 @@ function ScanTab(p: {
         ))}
       </div>
 
+      <div className="mb-3 grid grid-cols-2 overflow-hidden rounded-xl border border-slate-300 bg-white">
+        {(['barcode', 'sku'] as InputType[]).map((k) => (
+          <button
+            key={k}
+            onClick={() => p.setInputType(k)}
+            className={`py-2 text-sm font-bold ${p.inputType === k ? 'bg-[#FFD100] text-slate-900' : 'text-slate-600'}`}
+          >
+            {k === 'barcode' ? 'Input: Barcode' : 'Input: SKU / Weighted'}
+          </button>
+        ))}
+      </div>
+
       {p.notice && <Banner kind={p.notice.kind}>{p.notice.text}</Banner>}
       <JobStatus job={p.job} jobError={p.jobError} />
 
@@ -255,8 +285,8 @@ function ScanTab(p: {
         <input
           value={text}
           onChange={(e) => setText(e.target.value)}
-          inputMode="numeric"
-          placeholder="Scan, or type a barcode"
+          inputMode={p.inputType === 'sku' ? 'text' : 'numeric'}
+          placeholder={p.inputType === 'sku' ? 'Type the SKU (weighted items)' : 'Scan, or type a barcode'}
           className="min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3 py-3 text-base"
         />
         <button className="rounded-xl bg-[#005A9C] px-4 font-bold text-white">Find</button>
@@ -264,7 +294,9 @@ function ScanTab(p: {
 
       {product ? (
         <div className="rounded-2xl bg-white p-4 shadow">
-          <div className="text-sm text-slate-500">{product.barcode} · SKU {product.sku}</div>
+          <div className="text-sm text-slate-500">
+            {product.kind === 'sku' ? `SKU ${product.sku} · found by SKU` : `${product.barcode} · SKU ${product.sku}`}
+          </div>
           <div className="mt-1 text-lg font-bold leading-tight">{product.longDesc || product.shortDesc}</div>
           <div className="mt-2 text-4xl font-extrabold text-[#005A9C]">{peso(product.price)}</div>
           {p.mode === 'single' ? (
@@ -282,7 +314,9 @@ function ScanTab(p: {
           )}
         </div>
       ) : (
-        <div className="mt-10 text-center text-slate-400">Scan a product barcode</div>
+        <div className="mt-10 text-center text-slate-400">
+          {p.inputType === 'sku' ? 'Type a SKU (for weighted items)' : 'Scan a product barcode'}
+        </div>
       )}
     </div>
   );
@@ -324,7 +358,7 @@ function ListTab(p: {
                 <div className="w-7 text-center text-sm font-bold text-slate-400">{i + 1}</div>
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-semibold">{it.longDesc || it.shortDesc}</div>
-                  <div className="text-xs text-slate-500">{it.barcode}</div>
+                  <div className="text-xs text-slate-500">{it.kind === 'sku' ? `SKU ${it.sku}` : it.barcode}</div>
                 </div>
                 <div className="text-sm font-bold text-[#005A9C]">{peso(it.price)}</div>
                 <button

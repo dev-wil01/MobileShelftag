@@ -5,6 +5,8 @@ export interface Product {
   shortDesc: string;
   price: string;
   longDesc: string;
+  /** how it was looked up: by barcode, or by SKU (weighted items) */
+  kind?: 'barcode' | 'sku';
 }
 
 export interface AppState {
@@ -17,11 +19,14 @@ export interface AppState {
   listCount: number;
 }
 
-export type ScanStatus = 'ok' | 'invalid' | 'notfound' | 'nodata';
+export type ScanStatus = 'ok' | 'invalid' | 'notfound' | 'nodata' | 'nosku';
+
+export type InputType = 'barcode' | 'sku';
 
 export interface ScanResult {
   status: ScanStatus;
   barcode?: string;
+  type?: InputType;
   product?: Product;
   listCount?: number;
 }

@@ -38,4 +38,27 @@ class RulesTest {
         assertNull(MasterfileParser.parseLine("   "))
         assertNotNull(MasterfileParser.parseLine("4804880225555,2315,SAMPLE ITEM1,4015.00,1.00,6135,1,192,193,639,SAMPLE ITEM1, "))
     }
+
+    @Test fun skusAreKeptExactAndValidated() {
+        assertEquals("2382", BarcodeRules.normalizeSku(" 2382 "))
+        assertEquals("02382", BarcodeRules.normalizeSku("02382")) // no zero stripping
+        assertEquals("AB12", BarcodeRules.normalizeSku("AB12"))
+        assertNull(BarcodeRules.normalizeSku(null))
+        assertNull(BarcodeRules.normalizeSku("  "))
+        assertNull(BarcodeRules.normalizeSku("23 82"))
+        assertNull(BarcodeRules.normalizeSku("23,82"))
+        assertNull(BarcodeRules.normalizeSku("1".repeat(21)))
+    }
+
+    @Test fun weightedRowIsOnlyForTheSkuTable() {
+        val line = "0,9999,WEIGHTED PORK,310.00,1.00,1,1,1,1,1,WEIGHTED PORK,"
+        assertNull(MasterfileParser.parseLine(line))          // not in the barcode table
+        val row = MasterfileParser.parseAny(line)!!           // but usable by SKU
+        assertEquals("0", row.barcode)
+        assertEquals("9999", row.sku)
+        assertEquals("310.00", row.price)
+        assertEquals(line, row.rawLine)
+        assertNull(MasterfileParser.parseAny("0,9999,BADPRICE,abc,1,1,1,1,1,1,X,"))
+        assertNull(MasterfileParser.parseAny("0,9999,SHORT,5.00"))
+    }
 }

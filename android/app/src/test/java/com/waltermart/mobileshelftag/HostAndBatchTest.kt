@@ -14,7 +14,7 @@ class HostAndBatchTest {
     }
 
     @Test fun realPcAddressesAreAccepted() {
-        listOf("10.202.180.115", "192.168.1.20", "wms-2562-opns1", "wms-2562-opns1.store.local").forEach {
+        listOf("192.0.2.15", "192.168.1.20", "pc-name", "pc-name.example.local").forEach {
             assertNull(it, HostRules.problem(it))
         }
     }

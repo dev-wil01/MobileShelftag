@@ -9,7 +9,9 @@ data class Product(
     val sku: String,
     val shortDesc: String,
     val price: String,
-    val longDesc: String
+    val longDesc: String,
+    /** "barcode" or "sku": how it was looked up (decides how it is sent to the printer). */
+    val kind: String = "barcode"
 )
 
 /**
@@ -45,6 +47,28 @@ class ProductStore(context: Context) {
         }
     }
 
+    /** First masterfile row of a SKU (also weighted items). The product keeps the row's own barcode, which is "0" for weighted items. */
+    @Synchronized
+    fun findSku(sku: String): Product? {
+        val d = open() ?: return null
+        d.rawQuery(
+            "SELECT barcode, sku, short_desc, price, long_desc FROM skus WHERE sku = ? LIMIT 1",
+            arrayOf(sku)
+        ).use { c ->
+            if (!c.moveToFirst()) return null
+            return Product(c.getString(0), c.getString(1), c.getString(2), c.getString(3), c.getString(4), "sku")
+        }
+    }
+
+    /** False for a database made by an older app version (before SKU input existed): a new sync is needed. */
+    @Synchronized
+    fun hasSkus(): Boolean {
+        val d = open() ?: return false
+        d.rawQuery("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'skus'", null).use { c ->
+            return c.moveToFirst()
+        }
+    }
+
     @Synchronized
     fun count(): Int {
         val d = open() ?: return 0
@@ -59,6 +83,10 @@ class ProductStore(context: Context) {
         val s = SQLiteDatabase.openOrCreateDatabase(stagingFile, null)
         s.execSQL(
             "CREATE TABLE products (barcode TEXT PRIMARY KEY, sku TEXT, short_desc TEXT, " +
+                "price TEXT, long_desc TEXT, raw_line TEXT) WITHOUT ROWID"
+        )
+        s.execSQL(
+            "CREATE TABLE skus (sku TEXT PRIMARY KEY, barcode TEXT, short_desc TEXT, " +
                 "price TEXT, long_desc TEXT, raw_line TEXT) WITHOUT ROWID"
         )
         return s

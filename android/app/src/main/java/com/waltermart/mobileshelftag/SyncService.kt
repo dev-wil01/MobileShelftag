@@ -30,6 +30,7 @@ class SyncService(
         val info = JSONObject(infoRes.body)
         val expectedSha = info.getString("sha256")
         val expectedCount = info.getInt("recordCount")
+        val expectedSkuCount = info.optInt("skuCount", -1) // -1: an older WMApp that does not know SKUs
         val sizeBytes = info.getLong("sizeBytes")
         val modified = info.optString("modifiedUtc")
 
@@ -64,10 +65,14 @@ class SyncService(
             progress("Saving products", 0, expectedCount.toLong())
             val staging = store.createStaging()
             var inserted = 0
+            var skuInserted = 0
             try {
                 staging.beginTransaction()
                 val stmt = staging.compileStatement(
                     "INSERT OR IGNORE INTO products (barcode, sku, short_desc, price, long_desc, raw_line) VALUES (?,?,?,?,?,?)"
+                )
+                val skuStmt = staging.compileStatement(
+                    "INSERT OR IGNORE INTO skus (sku, barcode, short_desc, price, long_desc, raw_line) VALUES (?,?,?,?,?,?)"
                 )
                 BufferedReader(InputStreamReader(tmp.inputStream(), Charsets.UTF_8), 64 * 1024).use { r ->
                     var first = true
@@ -75,15 +80,32 @@ class SyncService(
                     while (true) {
                         var line = r.readLine() ?: break
                         if (first) { line = line.removePrefix("﻿"); first = false }
-                        val row = MasterfileParser.parseLine(line) ?: continue
-                        stmt.clearBindings()
-                        stmt.bindString(1, row.barcode)
-                        stmt.bindString(2, row.sku)
-                        stmt.bindString(3, row.shortDesc)
-                        stmt.bindString(4, row.price)
-                        stmt.bindString(5, row.longDesc)
-                        stmt.bindString(6, row.rawLine)
-                        if (stmt.executeInsert() != -1L) inserted++
+                        val any = MasterfileParser.parseAny(line) ?: continue
+
+                        // SKU table: every usable row, the FIRST row of a SKU wins (same order as the PC)
+                        if (any.sku.isNotEmpty()) {
+                            skuStmt.clearBindings()
+                            skuStmt.bindString(1, any.sku)
+                            skuStmt.bindString(2, any.barcode)
+                            skuStmt.bindString(3, any.shortDesc)
+                            skuStmt.bindString(4, any.price)
+                            skuStmt.bindString(5, any.longDesc)
+                            skuStmt.bindString(6, any.rawLine)
+                            if (skuStmt.executeInsert() != -1L) skuInserted++
+                        }
+
+                        // barcode table: weighted/blank barcodes (0) stay out
+                        val row = MasterfileParser.parseLine(line)
+                        if (row != null) {
+                            stmt.clearBindings()
+                            stmt.bindString(1, row.barcode)
+                            stmt.bindString(2, row.sku)
+                            stmt.bindString(3, row.shortDesc)
+                            stmt.bindString(4, row.price)
+                            stmt.bindString(5, row.longDesc)
+                            stmt.bindString(6, row.rawLine)
+                            if (stmt.executeInsert() != -1L) inserted++
+                        }
                         lineNo++
                         if (lineNo % 5000 == 0) progress("Saving products", inserted.toLong(), expectedCount.toLong())
                     }
@@ -97,6 +119,9 @@ class SyncService(
             // 4. validate
             if (inserted != expectedCount) {
                 throw ApiException("The imported product count ($inserted) does not match the PC ($expectedCount). The old data was kept.")
+            }
+            if (expectedSkuCount >= 0 && skuInserted != expectedSkuCount) {
+                throw ApiException("The imported SKU count ($skuInserted) does not match the PC ($expectedSkuCount). The old data was kept.")
             }
 
             // 5. replace

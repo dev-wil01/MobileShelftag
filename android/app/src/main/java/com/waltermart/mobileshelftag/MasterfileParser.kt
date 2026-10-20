@@ -17,7 +17,17 @@ data class MasterfileRow(
  * The original line is kept exactly (it is what the label template reads on the PC).
  */
 object MasterfileParser {
+    /** A usable row for the BARCODE table: weighted/blank barcodes (0) are left out. */
     fun parseLine(rawLine: String): MasterfileRow? {
+        val row = parseAny(rawLine) ?: return null
+        return if (BarcodeRules.isWeightedOrBlank(row.barcode)) null else row
+    }
+
+    /**
+     * A usable row for the SKU table: also weighted items (barcode 0), because those are found
+     * by SKU. Needs at least 11 fields and a numeric price, like the PC side.
+     */
+    fun parseAny(rawLine: String): MasterfileRow? {
         val line = rawLine.trim()
         if (line.isEmpty()) return null
 
@@ -25,7 +35,6 @@ object MasterfileParser {
         if (f.size < 11) return null
 
         val barcode = f[0].trim()
-        if (BarcodeRules.isWeightedOrBlank(barcode)) return null
 
         val price = f[3].trim()
         if (price.toBigDecimalOrNull() == null) return null

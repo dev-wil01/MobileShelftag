@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Original, neutral icon: a blue shelf tag on the yellow background. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#005A9C"
+        android:pathData="M30,36 L78,36 Q82,36 82,40 L82,68 Q82,72 78,72 L30,72 Q26,72 26,68 L26,40 Q26,36 30,36 Z"/>
+    <path android:fillColor="#FFD100"
+        android:pathData="M34,48 m-4,0 a4,4 0 1,0 8,0 a4,4 0 1,0 -8,0"/>
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M44,45 L74,45 L74,50 L44,50 Z"/>
+    <path android:fillColor="#FFD100"
+        android:pathData="M44,56 L68,56 L68,61 L44,61 Z"/>
+</vector>
