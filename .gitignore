@@ -1,0 +1,18 @@
+node_modules/
+dist/
+.idea/
+*.log
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+# the web screens are copied here by the build (CI or local), never committed
+android/app/src/main/assets/
+
+# never commit signing material or built apps
+*.jks
+*.keystore
+*.apk
+*.aab

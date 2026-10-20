@@ -1,0 +1,112 @@
+name: Build debug APK
+
+# Runs on every push to main/master, and on demand: GitHub > Actions > "Build debug APK" > Run workflow.
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: debug-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@v4
+
+      # ---- web screens (React + TypeScript + Vite + Tailwind) -------------------------------
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install web dependencies
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
+      - name: Type-check the screens (informational)
+        run: npm run lint
+        continue-on-error: true
+
+      - name: Build the screens
+        run: npm run build
+
+      - name: Guard - no localhost addresses or embedded secrets
+        run: |
+          set -u
+          # The app must only talk to the PC address entered in Settings, never to the handheld itself.
+          if grep -rEnI "https?://(localhost|127\.[0-9]+\.[0-9]+\.[0-9]+|0\.0\.0\.0|10\.0\.2\.2)" src android/app/src/main dist; then
+            echo "::error::A localhost-style URL was found in the app source or build output."
+            exit 1
+          fi
+          # Obvious private keys / tokens must never be committed.
+          if grep -rEnI "(-----BEGIN [A-Z ]*PRIVATE KEY-----|ghp_[A-Za-z0-9]{36}|AKIA[0-9A-Z]{16})" . --exclude-dir=node_modules --exclude-dir=.git; then
+            echo "::error::Something that looks like a private key or access token is in the repository."
+            exit 1
+          fi
+          echo "Guard passed."
+
+      - name: Copy the screens into the Android app
+        run: |
+          mkdir -p android/app/src/main/assets
+          cp -r dist/* android/app/src/main/assets/
+          test -f android/app/src/main/assets/index.html
+
+      # ---- Android ----------------------------------------------------------------------------
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up the Android SDK (platform 34, as in app/build.gradle)
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Set up Gradle 8.0 (same as the previous project; AGP 8.1.1 needs 8.0+)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.0'
+
+      - name: Run the Kotlin unit tests and build the debug APK
+        working-directory: android
+        run: gradle testDebugUnitTest assembleDebug --no-daemon --stacktrace
+
+      - name: Check the APK contents
+        run: |
+          APK=$(ls android/app/build/outputs/apk/debug/*.apk | head -n 1)
+          echo "Built: $APK"
+          unzip -l "$APK" | grep -q "assets/index.html" || { echo "::error::The screens are missing from the APK."; exit 1; }
+          if unzip -p "$APK" 'assets/*' | grep -aEq "https?://(localhost|127\.[0-9]+\.[0-9]+\.[0-9]+|10\.0\.2\.2)"; then
+            echo "::error::The APK screens contain a localhost URL."; exit 1
+          fi
+          mkdir -p out
+          cp "$APK" "out/MobileShelfTag-debug-${{ github.run_number }}.apk"
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MobileShelfTag-debug-apk
+          path: out/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload test reports if something failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: android/app/build/reports/
+          if-no-files-found: ignore
