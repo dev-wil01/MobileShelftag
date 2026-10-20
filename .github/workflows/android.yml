@@ -67,13 +67,22 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Set up the Android SDK (platform 34, as in app/build.gradle)
-        uses: android-actions/setup-android@v3
-
-      - name: Install SDK packages
+      # GitHub's ubuntu runners already ship the Android SDK (ANDROID_HOME). The separate
+      # android-actions/setup-android step failed while downloading newer command-line tools,
+      # so it is not used. Packages are installed only if they are missing.
+      - name: Make sure Android SDK platform 34 is present
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
+          ls "$ANDROID_HOME/platforms" "$ANDROID_HOME/build-tools" || true
+          if [ -d "$ANDROID_HOME/platforms/android-34" ] && [ -d "$ANDROID_HOME/build-tools/34.0.0" ]; then
+            echo "Platform 34 and build-tools 34.0.0 are already installed."
+          else
+            SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+            yes | "$SDKM" --licenses > /dev/null || true
+            "$SDKM" "platforms;android-34" "build-tools;34.0.0"
+          fi
 
       - name: Set up Gradle 8.0 (same as the previous project; AGP 8.1.1 needs 8.0+)
         uses: gradle/actions/setup-gradle@v4
