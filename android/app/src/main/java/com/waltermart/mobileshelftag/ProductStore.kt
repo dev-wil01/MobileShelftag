@@ -70,6 +70,15 @@ class ProductStore(context: Context) {
     }
 
     @Synchronized
+    fun skuCount(): Int {
+        if (!hasSkus()) return 0
+        val d = open() ?: return 0
+        d.rawQuery("SELECT COUNT(*) FROM skus", null).use { c ->
+            return if (c.moveToFirst()) c.getInt(0) else 0
+        }
+    }
+
+    @Synchronized
     fun count(): Int {
         val d = open() ?: return 0
         d.rawQuery("SELECT COUNT(*) FROM products", null).use { c ->

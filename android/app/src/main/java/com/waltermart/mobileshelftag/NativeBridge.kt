@@ -24,6 +24,7 @@ class NativeBridge(private val context: Context, private val webView: WebView) {
     private val scans = ScanListStore(context)
     private val api = ApiClient(prefs)
     private val sync = SyncService(context, prefs, api, products)
+    private val updater = UpdateService(context, BuildConfig.UPDATE_REPO, BuildConfig.VERSION_CODE)
 
     private val dataWorker = Executors.newSingleThreadExecutor()
     private val ioWorker = Executors.newSingleThreadExecutor()
@@ -52,6 +53,8 @@ class NativeBridge(private val context: Context, private val webView: WebView) {
         "saveSettings" -> saveSettings(a)
         "setupScanner" -> { DataWedge.configure(context); JSONObject().put("ok", true) }
         "ping" -> ping()
+        "updateCheck" -> updateCheck()
+        "updateInstall" -> updateInstall()
         "sync" -> runSync()
         "scan" -> scan(a)
         "listGet" -> listGet()
@@ -72,9 +75,13 @@ class NativeBridge(private val context: Context, private val webView: WebView) {
         .put("port", prefs.port)
         .put("hasToken", prefs.token.isNotBlank())
         .put("productCount", products.count())
+        .put("skuCount", products.skuCount())
         .put("lastSyncMs", prefs.lastSyncMs)
         .put("serverModifiedUtc", prefs.serverModifiedUtc)
         .put("listCount", scans.all().size)
+        .put("version", BuildConfig.VERSION_NAME)
+        .put("versionCode", BuildConfig.VERSION_CODE)
+        .put("updateEnabled", updater.enabled)
 
     private fun saveSettings(a: JSONObject): JSONObject {
         val host = a.getString("host").trim()
@@ -102,6 +109,29 @@ class NativeBridge(private val context: Context, private val webView: WebView) {
             .put("masterfileAvailable", j.optBoolean("masterfileAvailable"))
             .put("printingAvailable", j.optBoolean("printingAvailable", true))
             .put("latencyMs", System.currentTimeMillis() - t0)
+    }
+
+    // ---- app updates (GitHub Releases of the public repository) ----------------------
+
+    private fun updateJson(info: UpdateInfo?): JSONObject =
+        if (info == null) JSONObject().put("available", false)
+        else JSONObject().put("available", true).put("version", info.versionName)
+            .put("code", info.versionCode).put("notes", info.notes).put("sizeBytes", info.sizeBytes)
+
+    private fun updateCheck(): JSONObject = updateJson(updater.check())
+
+    /** Downloads the newest release and hands it to the Android installer, which asks the user to confirm. */
+    private fun updateInstall(): JSONObject {
+        val info = updater.check() ?: return JSONObject().put("status", "uptodate")
+        var lastEmit = 0L
+        val apk = updater.download(info) { done, total ->
+            val now = System.currentTimeMillis()
+            if (now - lastEmit > 250 || (total > 0 && done >= total)) {
+                lastEmit = now
+                emit("updateProgress", JSONObject().put("done", done).put("total", total))
+            }
+        }
+        return JSONObject().put("status", if (updater.install(apk)) "installing" else "permission")
     }
 
     private fun runSync(): JSONObject {
@@ -240,6 +270,6 @@ class NativeBridge(private val context: Context, private val webView: WebView) {
     }
 
     companion object {
-        private val IO_METHODS = setOf("ping", "sync", "printList", "printSingle", "batchStatus")
+        private val IO_METHODS = setOf("ping", "sync", "printList", "printSingle", "batchStatus", "updateCheck", "updateInstall")
     }
 }

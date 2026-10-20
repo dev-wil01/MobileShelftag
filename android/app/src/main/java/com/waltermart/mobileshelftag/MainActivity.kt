@@ -55,6 +55,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         bridge = NativeBridge(this, webView)
+        UpdateService(this, BuildConfig.UPDATE_REPO, BuildConfig.VERSION_CODE).cleanUp() // a finished update's download is no longer needed
         webView.addJavascriptInterface(bridge, "Android")
         webView.loadUrl("https://appassets.androidplatform.net/assets/index.html")
 

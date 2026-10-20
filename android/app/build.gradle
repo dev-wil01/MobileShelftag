@@ -11,8 +11,18 @@ android {
         applicationId "com.waltermart.mobileshelftag"
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName "1.0.0"
+        // The release workflow sets these (build number); a local build is "1.0.0-dev" with code 1.
+        versionCode(Integer.parseInt(System.getenv("VERSION_CODE") ?: "1"))
+        versionName(System.getenv("VERSION_NAME") ?: "1.0.0-dev")
+
+        // "owner/name" of the GitHub repository whose latest Release is the update source. Only the signed
+        // release workflow sets it; debug and local builds leave it empty, which switches the update check off
+        // (a debug-signed app could not be replaced by a release-signed one anyway).
+        buildConfigField "String", "UPDATE_REPO", "\"" + (System.getenv("UPDATE_REPO") ?: "") + "\""
+    }
+
+    buildFeatures {
+        buildConfig true
     }
 
     // Signing for the OPTIONAL release build. The values come from environment variables set by the

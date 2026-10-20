@@ -14,9 +14,21 @@ export interface AppState {
   port: number;
   hasToken: boolean;
   productCount: number;
+  skuCount: number;
   lastSyncMs: number;
   serverModifiedUtc: string;
   listCount: number;
+  version: string;
+  versionCode: number;
+  updateEnabled: boolean;
+}
+
+export interface UpdateInfo {
+  available: boolean;
+  version?: string;
+  code?: number;
+  notes?: string;
+  sizeBytes?: number;
 }
 
 export type ScanStatus = 'ok' | 'invalid' | 'notfound' | 'nodata' | 'nosku';

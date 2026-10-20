@@ -1,14 +1,21 @@
-name: Build signed release APK (optional, manual)
+name: Release (signed APK + GitHub Release)
 
-# Manual only: GitHub > Actions > "Build signed release APK" > Run workflow.
-# Needs four repository secrets (Settings > Secrets and variables > Actions):
+# Runs on every push to main/master, and on demand (Actions > "Release" > Run workflow).
+# It builds the SIGNED app and publishes it as a GitHub Release, which is what the handheld's
+# "Check for updates" looks at. Needs four repository secrets (Settings > Secrets and variables > Actions):
 #   KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD
-# The keystore is created on YOUR computer and is never committed. See README, section "Signed release".
+# The keystore is created on YOUR computer and is never committed (see tools/New-SigningKey.ps1).
 on:
+  push:
+    branches: [ "main", "master" ]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write   # needed only to create the GitHub Release; no other permission is granted
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -19,6 +26,13 @@ jobs:
       KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
       KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
       KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+      # Version: the build number is the app's versionCode, so every release is newer than the last.
+      VERSION_CODE: ${{ github.run_number }}
+      VERSION_NAME: 1.0.${{ github.run_number }}
+      # Where the app looks for updates (this repository's latest Release).
+      UPDATE_REPO: ${{ github.repository }}
+      COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+      GH_TOKEN: ${{ github.token }}
 
     steps:
       - uses: actions/checkout@v4
@@ -39,6 +53,19 @@ jobs:
           npm run build
           mkdir -p android/app/src/main/assets
           cp -r dist/* android/app/src/main/assets/
+
+      - name: Guard - no localhost addresses or embedded secrets
+        run: |
+          set -u
+          if grep -rEnI "https?://(localhost|127\.[0-9]+\.[0-9]+\.[0-9]+|0\.0\.0\.0|10\.0\.2\.2)" src android/app/src/main dist; then
+            echo "::error::A localhost-style URL was found in the app source or build output."
+            exit 1
+          fi
+          if grep -rEnI "(-----BEGIN [A-Z ]*PRIVATE KEY-----|ghp_[A-Za-z0-9]{36}|AKIA[0-9A-Z]{16})" . --exclude-dir=node_modules --exclude-dir=.git; then
+            echo "::error::Something that looks like a private key or access token is in the repository."
+            exit 1
+          fi
+          echo "Guard passed."
 
       - uses: actions/setup-java@v4
         with:
@@ -71,20 +98,23 @@ jobs:
           echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
           echo "KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
 
-      - name: Build the signed release APK
+      - name: Run the unit tests and build the signed release APK
         working-directory: android
-        run: gradle assembleRelease --no-daemon --stacktrace
+        run: gradle testDebugUnitTest assembleRelease --no-daemon --stacktrace
 
-      - name: Verify the signature
+      - name: Verify the signature and name the file
         run: |
           APK=$(ls android/app/build/outputs/apk/release/*.apk | head -n 1)
           "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs "$APK"
           mkdir -p out
-          cp "$APK" "out/MobileShelfTag-release-${{ github.run_number }}.apk"
+          cp "$APK" out/MobileShelfTag.apk
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: MobileShelfTag-release-apk
-          path: out/*.apk
-          if-no-files-found: error
-          retention-days: 30
+      - name: Publish the GitHub Release
+        run: |
+          TAG="v${VERSION_NAME}"
+          NOTES="${COMMIT_MESSAGE:-Manual build}"
+          gh release create "$TAG" out/MobileShelfTag.apk \
+            --target "$GITHUB_SHA" \
+            --title "MobileShelfTag ${VERSION_NAME}" \
+            --notes "$NOTES" \
+            --latest

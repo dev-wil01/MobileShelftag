@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { call, onEvent } from './native';
-import type { AppState, BatchInfo, InputType, Product, ScanResult } from './types';
+import type { AppState, BatchInfo, InputType, Product, ScanResult, UpdateInfo } from './types';
 
 type Tab = 'scan' | 'list' | 'sync' | 'settings';
 type Mode = 'single' | 'bulk';
@@ -20,6 +20,7 @@ export default function App() {
   const [job, setJob] = useState<BatchInfo | null>(null);
   const [jobError, setJobError] = useState<string | null>(null);
   const [busyPrint, setBusyPrint] = useState(false);
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
 
   // Input type: scanning/typing is a BARCODE by default; "SKU / Weighted" looks the typed or scanned value up as a SKU
   const [inputType, setInputType] = useState<InputType>('barcode');
@@ -42,6 +43,12 @@ export default function App() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Quiet update check when the app opens (needs internet; a failure is simply ignored here)
+  useEffect(() => {
+    if (!state?.updateEnabled || update) return;
+    call<UpdateInfo>('updateCheck').then(setUpdate).catch(() => {});
+  }, [state?.updateEnabled]);
 
   // ---- scanning ----
   const handleScan = useCallback(async (code: string) => {
@@ -134,9 +141,15 @@ export default function App() {
       <header className="bg-[#005A9C] px-4 py-3 text-white">
         <div className="text-lg font-bold">MobileShelfTag</div>
         <div className="text-xs opacity-90">
-          {state ? `${state.productCount.toLocaleString()} products · synced ${when(state.lastSyncMs)}` : 'Starting…'}
+          {state ? `${state.productCount.toLocaleString()} barcodes · ${state.skuCount.toLocaleString()} SKUs · synced ${when(state.lastSyncMs)} · v${state.version}` : 'Starting…'}
         </div>
       </header>
+
+      {update?.available && tab !== 'settings' && (
+        <button onClick={() => setTab('settings')} className="bg-[#FFD100] px-4 py-2 text-left text-sm font-bold text-slate-900">
+          Update available: version {update.version}. Tap to install.
+        </button>
+      )}
 
       <main className="flex-1 overflow-y-auto p-4">
         {tab === 'scan' && (
@@ -168,7 +181,7 @@ export default function App() {
           />
         )}
         {tab === 'sync' && <SyncTab state={state} onDone={refresh} />}
-        {tab === 'settings' && <SettingsTab state={state} onSaved={refresh} />}
+        {tab === 'settings' && <SettingsTab state={state} onSaved={refresh} update={update} setUpdate={setUpdate} />}
       </main>
 
       <nav className="grid grid-cols-4 border-t border-slate-300 bg-white">
@@ -459,7 +472,54 @@ function SyncTab({ state, onDone }: { state: AppState | null; onDone: () => void
 
 // ---------------------------------------------------------------- Settings
 
-function SettingsTab({ state, onSaved }: { state: AppState | null; onSaved: () => void }) {
+function SettingsTab({
+  state,
+  onSaved,
+  update,
+  setUpdate,
+}: {
+  state: AppState | null;
+  onSaved: () => void;
+  update: UpdateInfo | null;
+  setUpdate: (u: UpdateInfo | null) => void;
+}) {
+  const [upBusy, setUpBusy] = useState(false);
+  const [upProgress, setUpProgress] = useState<{ done: number; total: number } | null>(null);
+  const [upMsg, setUpMsg] = useState<{ kind: 'ok' | 'warn' | 'err'; text: string } | null>(null);
+
+  useEffect(() => onEvent<{ done: number; total: number }>('updateProgress', setUpProgress), []);
+
+  const checkUpdate = async () => {
+    setUpBusy(true);
+    setUpMsg(null);
+    try {
+      const u = await call<UpdateInfo>('updateCheck');
+      setUpdate(u);
+      if (!u.available) setUpMsg({ kind: 'ok', text: 'You have the latest version.' });
+    } catch (e) {
+      setUpMsg({ kind: 'err', text: errText(e) });
+    } finally {
+      setUpBusy(false);
+    }
+  };
+
+  const installUpdate = async () => {
+    setUpBusy(true);
+    setUpMsg(null);
+    setUpProgress(null);
+    try {
+      const r = await call<{ status: 'installing' | 'permission' | 'uptodate' }>('updateInstall');
+      if (r.status === 'installing') setUpMsg({ kind: 'ok', text: 'Downloaded. Confirm the install on the Android screen. Your list and settings are kept.' });
+      else if (r.status === 'permission')
+        setUpMsg({ kind: 'warn', text: 'Allow "Install unknown apps" for MobileShelfTag on the screen that just opened, go back, then press the button again.' });
+      else setUpMsg({ kind: 'ok', text: 'You already have the latest version.' });
+    } catch (e) {
+      setUpMsg({ kind: 'err', text: errText(e) });
+    } finally {
+      setUpBusy(false);
+    }
+  };
+
   const [host, setHost] = useState('');
   const [port, setPort] = useState('5088');
   const [token, setToken] = useState('');
@@ -537,9 +597,42 @@ function SettingsTab({ state, onSaved }: { state: AppState | null; onSaved: () =
         Save only
       </button>
 
-      <button onClick={scanner} className={`${btn} bg-white text-slate-700 border border-slate-300`}>
+      <button onClick={scanner} className={`${btn} mb-6 bg-white text-slate-700 border border-slate-300`}>
         Set up scanner (DataWedge)
       </button>
+
+      <div className="rounded-2xl bg-white p-4 shadow-sm">
+        <div className="text-sm font-semibold">App updates</div>
+        <div className="mb-3 text-xs text-slate-500">Installed version {state?.version ?? '…'}</div>
+        {!state?.updateEnabled ? (
+          <div className="text-sm text-slate-500">Update checking is not available in this build.</div>
+        ) : (
+          <>
+            {upMsg && <Banner kind={upMsg.kind}>{upMsg.text}</Banner>}
+            {update?.available && (
+              <div className="mb-3 rounded-lg bg-amber-50 p-3 text-sm">
+                <div className="font-bold">Version {update.version} is available</div>
+                {update.notes && <div className="mt-1 whitespace-pre-wrap text-slate-600">{update.notes}</div>}
+                {upBusy && upProgress && upProgress.total > 0 && (
+                  <div className="mt-2 text-xs text-slate-500">
+                    Downloading {Math.round((upProgress.done / upProgress.total) * 100)}%
+                  </div>
+                )}
+                <button disabled={upBusy} onClick={installUpdate} className={`${btn} mt-3 bg-[#FFD100] text-slate-900 disabled:opacity-50`}>
+                  {upBusy ? 'Please wait…' : 'DOWNLOAD & INSTALL UPDATE'}
+                </button>
+              </div>
+            )}
+            <button
+              disabled={upBusy}
+              onClick={checkUpdate}
+              className={`${btn} bg-white text-slate-700 border border-slate-300 disabled:opacity-50`}
+            >
+              {upBusy && !update?.available ? 'Checking…' : 'Check for updates'}
+            </button>
+          </>
+        )}
+      </div>
     </div>
   );
 }
