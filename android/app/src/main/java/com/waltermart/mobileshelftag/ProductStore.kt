@@ -11,13 +11,21 @@ data class Product(
     val price: String,
     val longDesc: String,
     /** "barcode" or "sku": how it was looked up (decides how it is sent to the printer). */
-    val kind: String = "barcode"
-)
+    val kind: String = "barcode",
+    /** Empty when the masterfile row can be printed, otherwise why it cannot. */
+    val problem: String = ""
+) {
+    val usable: Boolean get() = problem.isEmpty()
+}
 
 /**
- * The offline product database (SQLite file products.db). It is only ever REPLACED as a whole,
- * after a complete, verified download has been imported into a separate staging file, so a
- * failed sync can never damage the last good data.
+ * The offline product database (SQLite file products.db): ONE table, `items`, with every line of the
+ * masterfile in file order (id = line order). It is only ever REPLACED as a whole, after a complete,
+ * verified download has been imported into a separate staging file, so a failed sync can never damage
+ * the last good data.
+ *
+ * Lookups return the FIRST printable row (same rule as the PC); if only unprintable rows match, the first
+ * of those is returned with its problem so the screen can explain it.
  */
 class ProductStore(context: Context) {
     private val dir: File = context.getDatabasePath("products.db").parentFile!!.also { it.mkdirs() }
@@ -35,70 +43,64 @@ class ProductStore(context: Context) {
         return db
     }
 
+    private fun hasItemsTable(d: SQLiteDatabase): Boolean =
+        d.rawQuery("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'items'", null).use { it.moveToFirst() }
+
     @Synchronized
-    fun find(normalizedBarcode: String): Product? {
+    fun find(barcode: String): Product? = lookup("barcode", barcode, "barcode")
+
+    @Synchronized
+    fun findSku(sku: String): Product? = lookup("sku", sku, "sku")
+
+    private fun lookup(column: String, value: String, kind: String): Product? {
         val d = open() ?: return null
+        if (!hasItemsTable(d)) return null
+        // printable rows first (problem = ''), then file order
         d.rawQuery(
-            "SELECT barcode, sku, short_desc, price, long_desc FROM products WHERE barcode = ? LIMIT 1",
-            arrayOf(normalizedBarcode)
+            "SELECT barcode, sku, short_desc, price, long_desc, problem FROM items WHERE $column = ? " +
+                "ORDER BY (problem <> ''), id LIMIT 1",
+            arrayOf(value)
         ).use { c ->
             if (!c.moveToFirst()) return null
-            return Product(c.getString(0), c.getString(1), c.getString(2), c.getString(3), c.getString(4))
+            return Product(c.getString(0), c.getString(1), c.getString(2), c.getString(3), c.getString(4), kind, c.getString(5))
         }
     }
 
-    /** First masterfile row of a SKU (also weighted items). The product keeps the row's own barcode, which is "0" for weighted items. */
+    /** Number of masterfile rows stored on this device. 0 when there is no data, or the data is from an older app version (sync again). */
     @Synchronized
-    fun findSku(sku: String): Product? {
-        val d = open() ?: return null
-        d.rawQuery(
-            "SELECT barcode, sku, short_desc, price, long_desc FROM skus WHERE sku = ? LIMIT 1",
-            arrayOf(sku)
-        ).use { c ->
-            if (!c.moveToFirst()) return null
-            return Product(c.getString(0), c.getString(1), c.getString(2), c.getString(3), c.getString(4), "sku")
-        }
-    }
-
-    /** False for a database made by an older app version (before SKU input existed): a new sync is needed. */
-    @Synchronized
-    fun hasSkus(): Boolean {
-        val d = open() ?: return false
-        d.rawQuery("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'skus'", null).use { c ->
-            return c.moveToFirst()
+    fun count(): Int {
+        val d = open() ?: return 0
+        if (!hasItemsTable(d)) return 0
+        d.rawQuery("SELECT COUNT(*) FROM items", null).use { c ->
+            return if (c.moveToFirst()) c.getInt(0) else 0
         }
     }
 
     @Synchronized
     fun skuCount(): Int {
-        if (!hasSkus()) return 0
         val d = open() ?: return 0
-        d.rawQuery("SELECT COUNT(*) FROM skus", null).use { c ->
+        if (!hasItemsTable(d)) return 0
+        d.rawQuery("SELECT COUNT(DISTINCT sku) FROM items WHERE sku <> ''", null).use { c ->
             return if (c.moveToFirst()) c.getInt(0) else 0
         }
     }
 
-    @Synchronized
-    fun count(): Int {
-        val d = open() ?: return 0
-        d.rawQuery("SELECT COUNT(*) FROM products", null).use { c ->
-            return if (c.moveToFirst()) c.getInt(0) else 0
-        }
-    }
-
-    /** Creates an empty staging database (any old one is removed). The caller fills and closes it. */
+    /** Creates an empty staging database (any old one is removed). The caller fills it, calls [createIndexes], and closes it. */
     fun createStaging(): SQLiteDatabase {
         deleteWithSidecars(stagingFile)
         val s = SQLiteDatabase.openOrCreateDatabase(stagingFile, null)
         s.execSQL(
-            "CREATE TABLE products (barcode TEXT PRIMARY KEY, sku TEXT, short_desc TEXT, " +
-                "price TEXT, long_desc TEXT, raw_line TEXT) WITHOUT ROWID"
-        )
-        s.execSQL(
-            "CREATE TABLE skus (sku TEXT PRIMARY KEY, barcode TEXT, short_desc TEXT, " +
-                "price TEXT, long_desc TEXT, raw_line TEXT) WITHOUT ROWID"
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, barcode TEXT NOT NULL, sku TEXT NOT NULL, " +
+                "short_desc TEXT NOT NULL, price TEXT NOT NULL, long_desc TEXT NOT NULL, raw_line TEXT NOT NULL, " +
+                "problem TEXT NOT NULL)"
         )
         return s
+    }
+
+    /** Built after the bulk insert (much faster than maintaining them row by row). */
+    fun createIndexes(s: SQLiteDatabase) {
+        s.execSQL("CREATE INDEX idx_items_barcode ON items (barcode)")
+        s.execSQL("CREATE INDEX idx_items_sku ON items (sku)")
     }
 
     /** Puts the verified staging file in place. If anything goes wrong the previous database is restored. */

@@ -31,6 +31,11 @@ class Prefs(context: Context) {
         get() = p.getString("masterfileSha", "") ?: ""
         set(v) = p.edit().putString("masterfileSha", v).apply()
 
+    /** JSON of the last sync's reconciliation (lines in the file, rows stored, blank, incomplete, weighted, duplicates). */
+    var syncSummary: String
+        get() = p.getString("syncSummary", "") ?: ""
+        set(v) = p.edit().putString("syncSummary", v).apply()
+
     var serverModifiedUtc: String
         get() = p.getString("serverModifiedUtc", "") ?: ""
         set(v) = p.edit().putString("serverModifiedUtc", v).apply()

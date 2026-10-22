@@ -23,20 +23,33 @@ class RulesTest {
 
     @Test fun goodLineIsParsedAndKeptVerbatim() {
         val line = "4804880221540,2382,BAGUIO OIL CCNT 1GL/6,847.50,6.00,6135,1,192,193,639,BAGUIO COCONUT OIL 1 GALLON, "
-        val row = MasterfileParser.parseLine(line)!!
+        val row = MasterfileParser.parse(line)!!
         assertEquals("4804880221540", row.barcode)
         assertEquals("2382", row.sku)
         assertEquals("847.50", row.price)
         assertEquals("BAGUIO COCONUT OIL 1 GALLON", row.longDesc)
         assertEquals(line.trim(), row.rawLine)
+        assertEquals(true, row.usable)
+        assertEquals(false, row.weighted)
     }
 
-    @Test fun badLinesAreSkipped() {
-        assertNull(MasterfileParser.parseLine("0,9999,WEIGHTED,10.00,1.00,1,1,1,1,1,WEIGHTED,"))
-        assertNull(MasterfileParser.parseLine("4800000000001,1,SHORT,5.00"))
-        assertNull(MasterfileParser.parseLine("4800000000002,2,BADPRICE,abc,1,1,1,1,1,1,BADPRICE,"))
-        assertNull(MasterfileParser.parseLine("   "))
-        assertNotNull(MasterfileParser.parseLine("4804880225555,2315,SAMPLE ITEM1,4015.00,1.00,6135,1,192,193,639,SAMPLE ITEM1, "))
+    @Test fun onlyABlankLineIsNotStored() {
+        assertNull(MasterfileParser.parse("   "))
+        assertNull(MasterfileParser.parse(""))
+    }
+
+    @Test fun everyOtherLineIsStoredWithItsProblem() {
+        val short = MasterfileParser.parse("4800000000001,1,SHORT,5.00")!!
+        assertEquals(false, short.usable)
+        assertEquals("4800000000001", short.barcode)
+        assertEquals("4800000000001,1,SHORT,5.00", short.rawLine)
+
+        val badPrice = MasterfileParser.parse("4800000000002,2,BADPRICE,abc,1,1,1,1,1,1,BADPRICE,")!!
+        assertEquals(false, badPrice.usable)
+
+        assertNotNull(MasterfileParser.parse("4804880225555,2315,SAMPLE ITEM1,4015.00,1.00,6135,1,192,193,639,SAMPLE ITEM1, "))
+        // no crash on a line with almost nothing in it
+        assertEquals(false, MasterfileParser.parse(",")!!.usable)
     }
 
     @Test fun skusAreKeptExactAndValidated() {
@@ -50,15 +63,14 @@ class RulesTest {
         assertNull(BarcodeRules.normalizeSku("1".repeat(21)))
     }
 
-    @Test fun weightedRowIsOnlyForTheSkuTable() {
+    @Test fun weightedRowIsStoredAndFoundBySku() {
         val line = "0,9999,WEIGHTED PORK,310.00,1.00,1,1,1,1,1,WEIGHTED PORK,"
-        assertNull(MasterfileParser.parseLine(line))          // not in the barcode table
-        val row = MasterfileParser.parseAny(line)!!           // but usable by SKU
+        val row = MasterfileParser.parse(line)!!
         assertEquals("0", row.barcode)
         assertEquals("9999", row.sku)
         assertEquals("310.00", row.price)
         assertEquals(line, row.rawLine)
-        assertNull(MasterfileParser.parseAny("0,9999,BADPRICE,abc,1,1,1,1,1,1,X,"))
-        assertNull(MasterfileParser.parseAny("0,9999,SHORT,5.00"))
+        assertEquals(true, row.usable)
+        assertEquals(true, row.weighted)   // never found by barcode, found by SKU
     }
 }

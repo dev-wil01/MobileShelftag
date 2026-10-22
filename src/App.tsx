@@ -3,16 +3,13 @@ import { call, onEvent } from './native';
 import type { AppState, BatchInfo, InputType, Product, ScanResult, UpdateInfo } from './types';
 
 type Tab = 'scan' | 'list' | 'sync' | 'settings';
-type Mode = 'single' | 'bulk';
 
-const peso = (p: string) => '₱' + Number(p).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const when = (ms: number) => (ms ? new Date(ms).toLocaleString() : 'never');
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('scan');
-  const [mode, setMode] = useState<Mode>('single');
   const [state, setState] = useState<AppState | null>(null);
   const [items, setItems] = useState<Product[]>([]);
   const [last, setLast] = useState<ScanResult | null>(null);
@@ -27,9 +24,6 @@ export default function App() {
   const [inputType, setInputType] = useState<InputType>('barcode');
   const inputTypeRef = useRef(inputType);
   inputTypeRef.current = inputType;
-
-  const modeRef = useRef(mode);
-  modeRef.current = mode;
 
   const refresh = useCallback(async () => {
     try {
@@ -54,18 +48,21 @@ export default function App() {
   // ---- scanning ----
   const handleScan = useCallback(async (code: string) => {
     try {
-      const add = modeRef.current === 'bulk';
       const type = inputTypeRef.current;
-      const r = await call<ScanResult>('scan', { barcode: code, add, type });
+      // every successful lookup goes straight into the list
+      const r = await call<ScanResult>('scan', { barcode: code, add: true, type });
       setLast(r);
       setTick((n) => n + 1);
       call('haptic', { kind: r.status === 'ok' ? 'ok' : 'bad' }).catch(() => {});
       if (r.status === 'ok') {
         setNotice(null);
-        if (add) {
-          const l = await call<{ items: Product[] }>('listGet');
-          setItems(l.items);
-        }
+        const l = await call<{ items: Product[] }>('listGet');
+        setItems(l.items);
+      } else if (r.status === 'unusable') {
+        setNotice({
+          kind: 'warn',
+          text: `Found "${r.product?.longDesc || r.product?.shortDesc || code}", but it cannot be printed: ${r.problem}. It was not added to the list. Fix this row in the masterfile.`,
+        });
       } else if (r.status === 'invalid') {
         setNotice({
           kind: 'warn',
@@ -76,8 +73,6 @@ export default function App() {
         });
       } else if (r.status === 'nodata') {
         setNotice({ kind: 'err', text: 'No product data on this device yet. Open the Sync tab and sync the masterfile.' });
-      } else if (r.status === 'nosku') {
-        setNotice({ kind: 'err', text: 'This device has no SKU data yet. Open the Sync tab and sync the masterfile again.' });
       } else {
         setNotice({ kind: 'warn', text: `${type === 'sku' ? 'SKU' : 'Product'} not found: ${r.barcode ?? code}` });
       }
@@ -88,8 +83,23 @@ export default function App() {
 
   useEffect(() => onEvent<{ barcode: string }>('scan', (p) => handleScan(p.barcode)), [handleScan]);
 
+  // ---- list selection: every label is selected by default; the user can unselect what should not print ----
+  const [deselected, setDeselected] = useState<Set<number>>(new Set());
+  const selectedIds = items.filter((i) => !deselected.has(i.id!)).map((i) => i.id!);
+  const lastBatchIds = useRef<number[]>([]);
+
+  const toggleItem = (id: number) =>
+    setDeselected((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  const selectAll = () => setDeselected(new Set());
+  const selectNone = () => setDeselected(new Set(items.map((i) => i.id!)));
+
   // ---- printing ----
-  const follow = useCallback(async (first: BatchInfo, isList: boolean) => {
+  const follow = useCallback(async (first: BatchInfo) => {
     let info = first;
     setJob(info);
     for (let i = 0; i < 180 && info.state !== 'HandedToBarTender' && info.state !== 'Failed' && info.state !== 'Interrupted'; i++) {
@@ -98,39 +108,50 @@ export default function App() {
         info = await call<BatchInfo>('batchStatus', { batchId: first.batchId });
         setJob(info);
       } catch (e) {
+        // the batch id is kept on purpose: pressing Print again is then safe (the PC will not print it twice)
         setJobError(`Lost contact with the PC while printing. The labels may still be printing; check the printer before sending again. (${errText(e)})`);
         return;
       }
     }
-    if (info.state === 'HandedToBarTender' && isList) {
-      // remove only the labels that were sent (scans made while printing stay in the list)
-      const l = await call<{ items: Product[] }>('resendRemaining', { completed: info.total });
-      setItems(l.items);
-      setState(await call<AppState>('getState'));
-    }
+    // the job has ended: the next press of Print is a new, deliberate print job
+    call('printFinished').catch(() => {});
   }, []);
 
-  const send = useCallback(async (method: 'printList' | 'printSingle', args: object = {}) => {
+  const printSelected = useCallback(async () => {
+    const ids = items.filter((i) => !deselected.has(i.id!)).map((i) => i.id!);
+    if (ids.length === 0) {
+      setJobError('Select at least one label to print.');
+      return;
+    }
+    lastBatchIds.current = ids;
     setBusyPrint(true);
     setJob(null);
     setJobError(null);
     try {
-      const info = await call<BatchInfo>(method, args);
-      await follow(info, method === 'printList');
+      const info = await call<BatchInfo>('printList', { ids });
+      await follow(info);
     } catch (e) {
       setJobError(errText(e));
     } finally {
       setBusyPrint(false);
     }
-  }, [follow]);
+  }, [items, deselected, follow]);
 
-  const resendRemaining = async () => {
-    if (!job) return;
-    const l = await call<{ items: Product[] }>('resendRemaining', { completed: job.completed });
-    setItems(l.items);
+  const closeDialog = () => {
     setJob(null);
     setJobError(null);
   };
+
+  /** After a stopped job: unselect the labels that were already sent, so Print selected only sends the rest. */
+  const unselectSent = () => {
+    if (!job) return;
+    const sent = lastBatchIds.current.slice(0, job.completed);
+    setDeselected((s) => new Set([...s, ...sent]));
+    closeDialog();
+    setTab('list');
+  };
+
+  const jobEnded = !!job && (job.state === 'HandedToBarTender' || job.state === 'Failed' || job.state === 'Interrupted');
 
   const tabs: [Tab, string, IconName][] = [
     ['scan', 'Scan', 'scan'],
@@ -162,8 +183,6 @@ export default function App() {
       <main className="flex-1 overflow-y-auto px-4 pb-2 pt-3">
         {tab === 'scan' && (
           <ScanTab
-            mode={mode}
-            setMode={setMode}
             inputType={inputType}
             setInputType={setInputType}
             last={last}
@@ -174,25 +193,32 @@ export default function App() {
             listCount={items.length}
             job={job}
             jobError={jobError}
-            busy={busyPrint}
-            onPrintOne={(p) => send('printSingle', p.kind === 'sku' ? { barcode: p.sku, type: 'sku' } : { barcode: p.barcode })}
           />
         )}
         {tab === 'list' && (
           <ListTab
             items={items}
+            deselected={deselected}
             job={job}
-            jobError={jobError}
             busy={busyPrint}
-            onSend={() => send('printList')}
-            onResend={resendRemaining}
+            onToggle={toggleItem}
+            onSelectAll={selectAll}
+            onSelectNone={selectNone}
+            onPrint={printSelected}
             onRemove={async (id) => setItems((await call<{ items: Product[] }>('listRemove', { id })).items)}
-            onClear={async () => setItems((await call<{ items: Product[] }>('listClear')).items)}
+            onClear={async () => {
+              setItems((await call<{ items: Product[] }>('listClear')).items);
+              setDeselected(new Set());
+            }}
           />
         )}
         {tab === 'sync' && <SyncTab state={state} onDone={refresh} />}
         {tab === 'settings' && <SettingsTab state={state} onSaved={refresh} update={update} setUpdate={setUpdate} />}
       </main>
+
+      {(jobError || jobEnded) && (
+        <ResultDialog job={job} jobError={jobError} onClose={closeDialog} onUnselectSent={unselectSent} />
+      )}
 
       <nav className="grid grid-cols-4 border-t border-slate-300 bg-white pb-1">
         {tabs.map(([key, label, icon]) => {
@@ -286,33 +312,57 @@ function Banner({ kind, children }: { kind: 'ok' | 'warn' | 'err'; children: Rea
   );
 }
 
-function JobStatus({ job, jobError }: { job: BatchInfo | null; jobError: string | null }) {
-  if (jobError) return <Banner kind="err">{jobError}</Banner>;
-  if (!job) return null;
-  if (job.state === 'Interrupted')
-    return (
-      <Banner kind="err">
-        {job.error} {job.completed} of {job.total} label(s) were sent.
-        {job.uncertainSeq ? ` Label ${job.uncertainSeq} may or may not have printed: check the printer.` : ''}
-      </Banner>
-    );
-  if (job.state === 'Failed')
-    return (
-      <Banner kind="err">
-        Printing stopped at label {job.failedSeq}: {job.error}. {job.completed} of {job.total} label(s) were already sent to
-        BarTender.
-      </Banner>
-    );
-  if (job.state === 'HandedToBarTender')
-    return (
-      <Banner kind="ok">
-        Sent {job.total} label(s) to the printer program. Check the printer for the labels.
-      </Banner>
-    );
+/** Progress while a job runs. The final result is shown in a dialog the user has to confirm (ResultDialog). */
+function JobStatus({ job }: { job: BatchInfo | null; jobError?: string | null }) {
+  if (!job || job.state === 'HandedToBarTender' || job.state === 'Failed' || job.state === 'Interrupted') return null;
   return (
     <Banner kind="warn">
       {job.state === 'Queued' ? 'Waiting for the PC…' : 'Printing'} {job.completed} / {job.total}
     </Banner>
+  );
+}
+
+function ResultDialog(p: { job: BatchInfo | null; jobError: string | null; onClose: () => void; onUnselectSent: () => void }) {
+  const { job, jobError } = p;
+  let title = 'Printing problem';
+  let text: string = jobError ?? '';
+  let ok = false;
+
+  if (!jobError && job) {
+    if (job.state === 'HandedToBarTender') {
+      ok = true;
+      title = 'Labels sent';
+      text = `${job.total} label(s) were sent to the printer program. Check the printer for the labels. Your list was not changed.`;
+    } else if (job.state === 'Failed') {
+      title = 'Printing stopped';
+      text = `Stopped at label ${job.failedSeq}: ${job.error}. ${job.completed} of ${job.total} label(s) were already sent.`;
+    } else {
+      title = 'Printing was interrupted';
+      text = `${job.error ?? ''} ${job.completed} of ${job.total} label(s) were sent.${
+        job.uncertainSeq ? ` Label ${job.uncertainSeq} may or may not have printed: check the printer.` : ''
+      }`;
+    }
+  }
+  const sent = !jobError && job && !ok ? job.completed : 0;
+
+  return (
+    <div role="alertdialog" aria-modal="true" aria-label={title} className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6">
+      <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-xl">
+        <div className={`mb-2 flex items-center gap-2 text-lg font-extrabold ${ok ? 'text-ok' : 'text-bad'}`}>
+          <Icon name={ok ? 'check' : 'alert'} className="h-6 w-6" />
+          {title}
+        </div>
+        <div className="mb-4 text-sm leading-snug text-slate-700">{text}</div>
+        {sent > 0 && (
+          <button onClick={p.onUnselectSent} className={`${btn} mb-2 bg-slate-700 text-white`}>
+            Unselect the {sent} sent label(s)
+          </button>
+        )}
+        <button onClick={p.onClose} className={`${btn} ${ok ? 'bg-brand text-white' : 'bg-white text-slate-700 border border-slate-300'}`}>
+          OK
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -351,8 +401,6 @@ function Price({ value, className = '' }: { value: string; className?: string })
 // ---------------------------------------------------------------- Scan
 
 function ScanTab(p: {
-  mode: Mode;
-  setMode: (m: Mode) => void;
   inputType: InputType;
   setInputType: (t: InputType) => void;
   last: ScanResult | null;
@@ -363,8 +411,6 @@ function ScanTab(p: {
   listCount: number;
   job: BatchInfo | null;
   jobError: string | null;
-  busy: boolean;
-  onPrintOne: (p: Product) => void;
 }) {
   const [text, setText] = useState('');
   const product = p.last?.status === 'ok' ? p.last.product : undefined;
@@ -372,14 +418,6 @@ function ScanTab(p: {
 
   return (
     <div className="space-y-2.5">
-      <Segmented
-        value={p.mode}
-        onChange={p.setMode}
-        options={[
-          ['single', 'Single label'],
-          ['bulk', 'Bulk list'],
-        ]}
-      />
       <Segmented
         value={p.inputType}
         onChange={p.setInputType}
@@ -389,6 +427,7 @@ function ScanTab(p: {
         ]}
       />
 
+      {/* Scans arrive from the trigger by themselves. Typing: press Enter on the keyboard. */}
       <form
         className="flex gap-2 pt-1"
         onSubmit={(e) => {
@@ -401,12 +440,12 @@ function ScanTab(p: {
           value={text}
           onChange={(e) => setText(e.target.value)}
           inputMode={sku ? 'text' : 'numeric'}
+          enterKeyHint="done"
           maxLength={20}
           autoComplete="off"
-          placeholder={sku ? 'Type the SKU' : 'Scan or type a barcode'}
+          placeholder={sku ? 'Type the SKU, then Enter' : 'Scan, or type a barcode and Enter'}
           className="min-w-0 flex-1 rounded-2xl border border-slate-300 bg-white px-4 py-3.5 text-lg tabular-nums"
         />
-        <button className="rounded-2xl bg-brand px-5 text-base font-bold text-white">Find</button>
         <button
           type="button"
           onClick={() => p.onCamera()}
@@ -419,7 +458,7 @@ function ScanTab(p: {
 
       <div className="pt-1">
         {p.notice && <Banner kind={p.notice.kind}>{p.notice.text}</Banner>}
-        <JobStatus job={p.job} jobError={p.jobError} />
+        <JobStatus job={p.job} />
       </div>
 
       {product ? (
@@ -440,16 +479,10 @@ function ScanTab(p: {
           </div>
           <div className="h-2 bg-tag" />
           <div className="p-3">
-            {p.mode === 'single' ? (
-              <button disabled={p.busy} onClick={() => p.onPrintOne(product)} className={`${btn} bg-tag text-ink`}>
-                {p.busy ? 'Printing…' : 'Print 1 label'}
-              </button>
-            ) : (
-              <div className="flex items-center justify-center gap-2 rounded-xl bg-emerald-50 py-3 text-sm font-bold text-ok">
-                <Icon name="check" className="h-5 w-5" />
-                Added to the list ({p.listCount})
-              </div>
-            )}
+            <div className="flex items-center justify-center gap-2 rounded-xl bg-emerald-50 py-3 text-sm font-bold text-ok">
+              <Icon name="check" className="h-5 w-5" />
+              Added to the list ({p.listCount})
+            </div>
           </div>
         </div>
       ) : (
@@ -460,7 +493,7 @@ function ScanTab(p: {
             </div>
             <div className="mt-4 text-lg font-bold text-ink">Ready to scan</div>
             <div className="mt-1 text-sm leading-snug">
-              {sku ? 'Type a SKU to find weighted items.' : 'Pull the trigger on a barcode, or tap the camera.'}
+              {sku ? 'Type a SKU to find weighted items.' : 'Pull the trigger on a barcode, or tap the camera. Each product you find goes into the list.'}
             </div>
           </div>
         )
@@ -473,26 +506,23 @@ function ScanTab(p: {
 
 function ListTab(p: {
   items: Product[];
+  deselected: Set<number>;
   job: BatchInfo | null;
-  jobError: string | null;
   busy: boolean;
-  onSend: () => void;
-  onResend: () => void;
+  onToggle: (id: number) => void;
+  onSelectAll: () => void;
+  onSelectNone: () => void;
+  onPrint: () => void;
   onRemove: (id: number) => void;
   onClear: () => void;
 }) {
   const [confirmClear, setConfirmClear] = useState(false);
+  const selectedCount = p.items.filter((i) => !p.deselected.has(i.id!)).length;
+  const allSelected = selectedCount === p.items.length;
 
   return (
     <div>
-      <JobStatus job={p.job} jobError={p.jobError} />
-      {(p.job?.state === 'Failed' || p.job?.state === 'Interrupted') && (
-        <button onClick={p.onResend} className={`${btn} mb-3 bg-slate-700 text-white`}>
-          {p.job.completed > 0
-            ? `Check the printer, then remove the ${p.job.completed} sent label(s) and start a new job`
-            : 'Nothing was sent: start a new job'}
-        </button>
-      )}
+      <JobStatus job={p.job} />
 
       {p.items.length === 0 ? (
         <div className="flex flex-col items-center px-6 pt-12 text-center text-slate-500">
@@ -500,37 +530,66 @@ function ListTab(p: {
             <Icon name="list" className="h-10 w-10" />
           </div>
           <div className="mt-4 text-lg font-bold text-ink">No labels in the list</div>
-          <div className="mt-1 text-sm leading-snug">On the Scan tab, choose Bulk list and scan the products to print together.</div>
+          <div className="mt-1 text-sm leading-snug">Scan products on the Scan tab. Each one found is added here.</div>
         </div>
       ) : (
         <>
-          <div className="mb-2 flex items-baseline justify-between">
-            <div className="text-base font-bold">{p.items.length} {p.items.length === 1 ? 'label' : 'labels'}</div>
-            <div className="text-xs text-slate-500">Prints top to bottom, first scanned first</div>
+          <div className="mb-2 flex items-center justify-between">
+            <div className="text-base font-bold">
+              {selectedCount} of {p.items.length} selected
+            </div>
+            <button
+              onClick={allSelected ? p.onSelectNone : p.onSelectAll}
+              disabled={p.busy}
+              className="rounded-lg px-2 py-1.5 text-sm font-bold text-brand disabled:opacity-40"
+            >
+              {allSelected ? 'Select none' : 'Select all'}
+            </button>
           </div>
           <ol className="space-y-2">
-            {p.items.map((it, i) => (
-              <li key={it.id} className="flex items-center gap-3 rounded-xl bg-white py-2.5 pl-3 pr-1.5 shadow-sm ring-1 ring-black/5">
-                <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-aisle text-sm font-bold tabular-nums text-slate-600">{i + 1}</div>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-semibold">{it.longDesc || it.shortDesc}</div>
-                  <div className="text-xs tabular-nums text-slate-500">{it.kind === 'sku' ? `SKU ${it.sku}` : it.barcode}</div>
-                </div>
-                <Price value={it.price} className="text-lg text-brand" />
-                <button
-                  aria-label={`Remove item ${i + 1}`}
-                  onClick={() => p.onRemove(it.id!)}
-                  disabled={p.busy}
-                  className="grid h-11 w-11 place-items-center rounded-lg text-slate-400 active:bg-red-50 active:text-bad disabled:opacity-40"
+            {p.items.map((it, i) => {
+              const on = !p.deselected.has(it.id!);
+              return (
+                <li
+                  key={it.id}
+                  className={`flex items-center rounded-xl bg-white shadow-sm ring-1 ${on ? 'ring-brand/40' : 'ring-black/5'}`}
                 >
-                  <Icon name="trash" className="h-5 w-5" />
-                </button>
-              </li>
-            ))}
+                  <button
+                    onClick={() => p.onToggle(it.id!)}
+                    disabled={p.busy}
+                    role="checkbox"
+                    aria-checked={on}
+                    aria-label={`Label ${i + 1}: ${it.longDesc || it.shortDesc}`}
+                    className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pl-3 text-left disabled:opacity-60"
+                  >
+                    <span
+                      className={`grid h-7 w-7 shrink-0 place-items-center rounded-md border-2 ${on ? 'border-brand bg-brand text-white' : 'border-slate-300 bg-white text-transparent'}`}
+                    >
+                      <Icon name="check" className="h-5 w-5" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className={`block truncate text-sm font-semibold ${on ? '' : 'text-slate-400'}`}>{it.longDesc || it.shortDesc}</span>
+                      <span className="block text-xs tabular-nums text-slate-500">
+                        {i + 1} · {it.kind === 'sku' ? `SKU ${it.sku}` : it.barcode}
+                      </span>
+                    </span>
+                    <Price value={it.price} className={`text-lg ${on ? 'text-brand' : 'text-slate-400'}`} />
+                  </button>
+                  <button
+                    aria-label={`Remove item ${i + 1} from the list`}
+                    onClick={() => p.onRemove(it.id!)}
+                    disabled={p.busy}
+                    className="grid h-12 w-12 shrink-0 place-items-center rounded-lg text-slate-400 active:bg-red-50 active:text-bad disabled:opacity-40"
+                  >
+                    <Icon name="trash" className="h-5 w-5" />
+                  </button>
+                </li>
+              );
+            })}
           </ol>
           <div className="sticky bottom-0 -mx-4 mt-4 space-y-2 bg-aisle/95 px-4 pb-1 pt-3 backdrop-blur">
-            <button disabled={p.busy} onClick={p.onSend} className={`${btn} bg-tag text-ink`}>
-              {p.busy ? 'Sending…' : `Print all ${p.items.length}`}
+            <button disabled={p.busy || selectedCount === 0} onClick={p.onPrint} className={`${btn} bg-tag text-ink`}>
+              {p.busy ? 'Sending…' : selectedCount === 0 ? 'Select labels to print' : `Print selected (${selectedCount})`}
             </button>
             <button
               disabled={p.busy}
@@ -567,8 +626,11 @@ function SyncTab({ state, onDone }: { state: AppState | null; onDone: () => void
     setResult(null);
     setProgress(null);
     try {
-      const r = await call<{ count: number }>('sync');
-      setResult({ kind: 'ok', text: `Done. ${r.count.toLocaleString()} products are now available offline.` });
+      const r = await call<{ count: number; totalLines: number }>('sync');
+      setResult({
+        kind: 'ok',
+        text: `Done. All ${r.totalLines.toLocaleString()} lines of the masterfile are stored on this device (${r.count.toLocaleString()} rows).`,
+      });
     } catch (e) {
       setResult({ kind: 'err', text: `${errText(e)} Your previous product data is still in use.` });
     } finally {
@@ -584,7 +646,24 @@ function SyncTab({ state, onDone }: { state: AppState | null; onDone: () => void
     <div>
       <div className="mb-4 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
         <div className="text-sm text-slate-500">On this device</div>
-        <div className="text-2xl font-extrabold">{(state?.productCount ?? 0).toLocaleString()} products</div>
+        <div className="text-2xl font-extrabold">{(state?.productCount ?? 0).toLocaleString()} rows stored</div>
+        {state?.summary?.totalLines !== undefined && (
+          <div className="mt-1 text-sm text-slate-600">
+            File: {state.summary.totalLines.toLocaleString()} lines = {(state.summary.stored ?? 0).toLocaleString()} stored
+            {state.summary.blank ? ` + ${state.summary.blank} blank` : ''}
+          </div>
+        )}
+        {state?.summary && (state.summary.weighted || state.summary.duplicateRows || state.summary.incomplete) ? (
+          <ul className="mt-2 space-y-0.5 text-xs text-slate-500">
+            {!!state.summary.weighted && <li>{state.summary.weighted.toLocaleString()} weighted items (barcode 0): found by SKU</li>}
+            {!!state.summary.duplicateRows && (
+              <li>{state.summary.duplicateRows.toLocaleString()} repeated barcodes: the first row is used</li>
+            )}
+            {!!state.summary.incomplete && (
+              <li>{state.summary.incomplete.toLocaleString()} incomplete rows: stored, but cannot be printed</li>
+            )}
+          </ul>
+        ) : null}
         <div className="mt-1 text-sm text-slate-600">Last sync: {when(state?.lastSyncMs ?? 0)}</div>
         {state?.serverModifiedUtc && (
           <div className="text-sm text-slate-600">PC file dated: {new Date(state.serverModifiedUtc).toLocaleString()}</div>
@@ -608,7 +687,7 @@ function SyncTab({ state, onDone }: { state: AppState | null; onDone: () => void
         {running ? 'Syncing…' : 'SYNC MASTERFILE NOW'}
       </button>
       <p className="mt-3 text-xs text-slate-500">
-        Downloads the complete product list from the PC. Lookups work without Wi-Fi afterwards. If anything goes wrong,
+        Downloads the complete masterfile from the PC and keeps every line. Lookups work without Wi-Fi afterwards. If anything goes wrong,
         the previous list stays in use.
       </p>
     </div>

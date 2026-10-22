@@ -70,11 +70,9 @@ class NativeBridge(
         "listGet" -> listGet()
         "listRemove" -> { scans.remove(a.getLong("id")); resetPending(); listGet() }
         "listClear" -> { scans.clear(); resetPending(); listGet() }
-        "printList" -> printList()
-        "printSingle" -> printSingle(a)
+        "printList" -> printList(a)
+        "printFinished" -> { resetPending(); JSONObject().put("ok", true) }
         "batchStatus" -> batchStatus(a.getString("batchId"))
-        /** Removes the oldest [completed] labels: the ones already sent. */
-        "resendRemaining" -> { scans.removeOldest(a.getInt("completed")); resetPending(); listGet() }
         else -> throw IllegalArgumentException("Unknown method $method")
     }
 
@@ -100,6 +98,7 @@ class NativeBridge(
         .put("hasToken", prefs.token.isNotBlank())
         .put("productCount", products.count())
         .put("skuCount", products.skuCount())
+        .put("summary", try { JSONObject(prefs.syncSummary.ifBlank { "{}" }) } catch (e: Exception) { JSONObject() })
         .put("lastSyncMs", prefs.lastSyncMs)
         .put("serverModifiedUtc", prefs.serverModifiedUtc)
         .put("listCount", scans.all().size)
@@ -183,10 +182,12 @@ class NativeBridge(
         val key = (if (isSku) BarcodeRules.normalizeSku(typed) else BarcodeRules.normalize(typed))
             ?: return JSONObject().put("status", "invalid").put("type", if (isSku) "sku" else "barcode")
         if (products.count() == 0) return JSONObject().put("status", "nodata")
-        if (isSku && !products.hasSkus()) return JSONObject().put("status", "nosku")
 
         val p = (if (isSku) products.findSku(key) else products.find(key))
             ?: return JSONObject().put("status", "notfound").put("barcode", key).put("type", if (isSku) "sku" else "barcode")
+
+        // A row that exists but cannot be printed (incomplete in the masterfile): shown, never added to the list.
+        if (!p.usable) return JSONObject().put("status", "unusable").put("product", productJson(p)).put("problem", p.problem)
 
         val out = JSONObject().put("status", "ok").put("product", productJson(p))
         if (a.optBoolean("add")) {
@@ -218,11 +219,16 @@ class NativeBridge(
 
     // ---- printing --------------------------------------------------------------------
 
-    /** The same list always keeps the same batch id, so pressing SEND again after a timeout cannot print twice. */
-    private fun printList(): JSONObject {
+    /**
+     * Prints the SELECTED labels (ids from the screen; none given = the whole list), in list order.
+     * The same selection keeps the same batch id, so pressing Print again after a timeout cannot print twice.
+     * The screen calls printFinished when a job has ended, so a deliberate reprint gets a new batch id.
+     */
+    private fun printList(a: JSONObject): JSONObject {
         requireConnection()
-        val items = scans.all()
-        if (items.isEmpty()) throw ApiException("The list is empty.")
+        val ids = a.optJSONArray("ids")?.let { arr -> (0 until arr.length()).map { arr.getLong(it) }.toSet() }
+        val items = scans.all().filter { ids == null || it.id in ids }
+        if (items.isEmpty()) throw ApiException(if (ids == null) "The list is empty." else "Select at least one label to print.")
 
         val fingerprint = BatchPlan.fingerprint(items.map { it.id to keyOf(it.product) })
         if (prefs.pendingBatchId.isBlank() || prefs.pendingFingerprint != fingerprint) {
@@ -238,15 +244,6 @@ class NativeBridge(
         }
         body.put("items", arr)
 
-        return submit(batchId, body)
-    }
-
-    private fun printSingle(a: JSONObject): JSONObject {
-        requireConnection()
-        val batchId = newBatchId()
-        val body = JSONObject().put("batchId", batchId).put(
-            "items", JSONArray().put(lineJson(1, if (a.optString("type") == "sku") "sku:" + a.getString("barcode") else a.getString("barcode")))
-        )
         return submit(batchId, body)
     }
 
@@ -294,6 +291,6 @@ class NativeBridge(
     }
 
     companion object {
-        private val IO_METHODS = setOf("ping", "sync", "printList", "printSingle", "batchStatus", "updateCheck", "updateInstall")
+        private val IO_METHODS = setOf("ping", "sync", "printList", "batchStatus", "updateCheck", "updateInstall")
     }
 }

@@ -7,6 +7,8 @@ export interface Product {
   longDesc: string;
   /** how it was looked up: by barcode, or by SKU (weighted items) */
   kind?: 'barcode' | 'sku';
+  /** empty when the masterfile row can be printed */
+  problem?: string;
 }
 
 export interface AppState {
@@ -21,6 +23,17 @@ export interface AppState {
   version: string;
   versionCode: number;
   updateEnabled: boolean;
+  /** Reconciliation of the last sync: every line of the masterfile is accounted for. */
+  summary?: SyncSummary;
+}
+
+export interface SyncSummary {
+  totalLines?: number;
+  stored?: number;
+  blank?: number;
+  incomplete?: number;
+  weighted?: number;
+  duplicateRows?: number;
 }
 
 export interface UpdateInfo {
@@ -31,7 +44,7 @@ export interface UpdateInfo {
   sizeBytes?: number;
 }
 
-export type ScanStatus = 'ok' | 'invalid' | 'notfound' | 'nodata' | 'nosku';
+export type ScanStatus = 'ok' | 'invalid' | 'notfound' | 'nodata' | 'unusable';
 
 export type InputType = 'barcode' | 'sku';
 
@@ -40,6 +53,7 @@ export interface ScanResult {
   barcode?: string;
   type?: InputType;
   product?: Product;
+  problem?: string;
   listCount?: number;
 }
 
