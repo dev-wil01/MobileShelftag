@@ -33,11 +33,11 @@
             </intent-filter>
         </activity>
 
-        <!-- The camera library's scanner screen is locked to portrait like the rest of the app (the library default rotates with the sensor) -->
+        <!-- Continuous camera scanning, locked to portrait like the rest of the app -->
         <activity
-            android:name="com.journeyapps.barcodescanner.CaptureActivity"
-            android:screenOrientation="portrait"
-            tools:replace="android:screenOrientation" />
+            android:name=".CameraScanActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

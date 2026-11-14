@@ -39,6 +39,24 @@ export default function App() {
     refresh();
   }, [refresh]);
 
+  // The camera screen adds items on its own; when it closes, show what it collected.
+  useEffect(
+    () =>
+      onEvent('listChanged', async () => {
+        try {
+          const l = await call<{ items: Product[] }>('listGet');
+          setItems((prev) => {
+            const n = l.items.length - prev.length;
+            if (n > 0) setNotice({ kind: 'ok', text: `Camera: ${n} item${n === 1 ? '' : 's'} added. ${l.items.length} in the list.` });
+            return l.items;
+          });
+        } catch (e) {
+          setNotice({ kind: 'err', text: errText(e) });
+        }
+      }),
+    []
+  );
+
   // Quiet update check when the app opens (needs internet; a failure is simply ignored here)
   useEffect(() => {
     if (!state?.updateEnabled || update) return;
@@ -189,7 +207,7 @@ export default function App() {
             tick={tick}
             notice={notice}
             onManual={handleScan}
-            onCamera={() => call('cameraScan').catch((e) => setNotice({ kind: 'err', text: errText(e) }))}
+            onCamera={() => call('cameraScan', { type: inputType }).catch((e) => setNotice({ kind: 'err', text: errText(e) }))}
             listCount={items.length}
             job={job}
             jobError={jobError}

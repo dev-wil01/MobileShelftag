@@ -1,12 +1,8 @@
 package com.waltermart.mobileshelftag
 
 import android.content.Context
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.os.VibrationEffect
-import android.os.Vibrator
-import android.os.VibratorManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import org.json.JSONArray
@@ -25,7 +21,7 @@ import java.util.concurrent.Executors
 class NativeBridge(
     private val context: Context,
     private val webView: WebView,
-    private val openCamera: () -> Unit = {}
+    private val openCamera: (String) -> Unit = {}
 ) {
     private val prefs = Prefs(context)
     private val products = ProductStore(context)
@@ -61,8 +57,8 @@ class NativeBridge(
         "saveSettings" -> saveSettings(a)
         "setupScanner" -> { DataWedge.configure(context); JSONObject().put("ok", true) }
         "ping" -> ping()
-        "haptic" -> { haptic(a.optString("kind")); JSONObject().put("ok", true) }
-        "cameraScan" -> { ui.post { openCamera() }; JSONObject().put("ok", true) }
+        "haptic" -> { Haptics.buzz(context, a.optString("kind")); JSONObject().put("ok", true) }
+        "cameraScan" -> { val t = a.optString("type"); ui.post { openCamera(t) }; JSONObject().put("ok", true) }
         "updateCheck" -> updateCheck()
         "updateInstall" -> updateInstall()
         "sync" -> runSync()
@@ -74,20 +70,6 @@ class NativeBridge(
         "printFinished" -> { resetPending(); JSONObject().put("ok", true) }
         "batchStatus" -> batchStatus(a.getString("batchId"))
         else -> throw IllegalArgumentException("Unknown method $method")
-    }
-
-    /** A short buzz for a good scan, two for a bad one. Best effort: a device without a vibrator is simply silent. */
-    @Suppress("DEPRECATION")
-    private fun haptic(kind: String) {
-        try {
-            val v: Vibrator = if (Build.VERSION.SDK_INT >= 31)
-                context.getSystemService(VibratorManager::class.java).defaultVibrator
-            else context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-            val pattern = if (kind == "ok") longArrayOf(0, 35) else longArrayOf(0, 80, 60, 80)
-            if (Build.VERSION.SDK_INT >= 26) v.vibrate(VibrationEffect.createWaveform(pattern, -1)) else v.vibrate(pattern, -1)
-        } catch (e: Exception) {
-            // feedback is optional
-        }
     }
 
     // ---- state / settings ------------------------------------------------------------
@@ -284,6 +266,9 @@ class NativeBridge(
         val js = "window.__native && window.__native.resolve(${JSONObject.quote(id)}, $ok, ${JSONObject.quote(payload)})"
         ui.post { webView.evaluateJavascript(js, null) }
     }
+
+    /** The camera screen changed the list while the page was in the background. */
+    fun emitListChanged() = emit("listChanged", JSONObject())
 
     private fun emit(name: String, payload: JSONObject) {
         val js = "window.__native && window.__native.emit(${JSONObject.quote(name)}, ${JSONObject.quote(payload.toString())})"

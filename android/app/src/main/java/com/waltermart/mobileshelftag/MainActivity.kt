@@ -10,8 +10,7 @@ import android.view.WindowManager
 import android.webkit.WebSettings
 import android.webkit.WebView
 import androidx.appcompat.app.AppCompatActivity
-import com.journeyapps.barcodescanner.ScanContract
-import com.journeyapps.barcodescanner.ScanOptions
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.webkit.WebViewAssetLoader
 
@@ -20,20 +19,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var bridge: NativeBridge
     private var receiverRegistered = false
 
-    // Camera scanning: the library shows its own camera screen and returns the barcode text.
-    // The text goes through exactly the same path as a hardware scan (same rules, same lookup).
-    private val cameraLauncher = registerForActivityResult(ScanContract()) { result ->
-        result.contents?.let { bridge.emitScan(it) }
+    // Continuous camera scanning: its own screen looks every barcode up and adds it to the list,
+    // then hands control back here. The page is told to reload the list.
+    private val cameraLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        bridge.emitListChanged()
     }
 
-    private fun startCamera() {
-        val options = ScanOptions()
-            .setDesiredBarcodeFormats(ScanOptions.ONE_D_CODE_TYPES) // retail barcodes, not QR
-            .setPrompt("Point the camera at the item's barcode")
-            .setBeepEnabled(true)
-            .setOrientationLocked(true) // stays portrait, also when the handheld is turned over
-            .setBarcodeImageEnabled(false)
-        cameraLauncher.launch(options)
+    private fun startCamera(type: String) {
+        cameraLauncher.launch(Intent(this, CameraScanActivity::class.java).putExtra(CameraScanActivity.EXTRA_TYPE, type))
     }
 
     private val scanReceiver = object : BroadcastReceiver() {
@@ -80,7 +73,7 @@ class MainActivity : AppCompatActivity() {
             ) = assets.shouldInterceptRequest(request.url)
         }
 
-        bridge = NativeBridge(this, webView) { startCamera() }
+        bridge = NativeBridge(this, webView) { type -> startCamera(type) }
         UpdateService(this, BuildConfig.UPDATE_REPO, BuildConfig.VERSION_CODE).cleanUp() // a finished update's download is no longer needed
         webView.addJavascriptInterface(bridge, "Android")
         webView.loadUrl("https://appassets.androidplatform.net/assets/index.html")
